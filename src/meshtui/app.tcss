@@ -166,3 +166,21 @@ HelpScreen {
     background: $panel;
     color: $text;
 }
+
+AuditScreen {
+    background: $surface;
+}
+
+#audit-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#audit-box {
+    height: 1fr;
+    padding: 1 2;
+    background: $surface;
+    scrollbar-size-vertical: 1;
+}

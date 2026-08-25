@@ -14,8 +14,9 @@ from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
 from .radio import DemoLink, RadioLink, SerialLink, max_payload_bytes
-from .state import MeshState
+from .state import LocalChannel, MeshState
 from .store import Store
+from .widgets.audit import AuditScreen
 from .widgets.chat import ChatPane, LeaveChat
 from .widgets.detail import NodeDetail
 from .widgets.help import HelpScreen
@@ -47,6 +48,7 @@ class MeshTUI(App[None]):
         Binding("s", "cycle_sort", "sort"),
         Binding("d", "dm_selected", "dm node"),
         Binding("m", "show_map", "map"),
+        Binding("a", "show_audit", "audit"),
         Binding("t", "trace_selected", "trace"),
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
@@ -224,6 +226,18 @@ class MeshTUI(App[None]):
         self.state.firmware = info.get("firmware") or ""
         self.state.device_path = info.get("device") or ""
         self.state.channels = list(info.get("channels") or ["LongFast"])
+        self.state.local_channels = [
+            LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
+                         level=c.get("level", "UNKNOWN"), detail=c.get("detail", ""),
+                         hash=c.get("hash"))
+            for i, c in enumerate(info.get("channel_security") or [])
+        ]
+        weak = [c for c in self.state.local_channels if c.level in ("OPEN", "PUBLIC", "WEAK")]
+        if weak:
+            self.note(
+                f"{len(weak)} of your channels are not private - press 'a' for the audit",
+                "bold red",
+            )
         if self.state.my_node_id and self.state.my_node_id in self.state.nodes:
             self.state.nodes[self.state.my_node_id].is_self = True
         self.run_worker(
@@ -311,6 +325,9 @@ class MeshTUI(App[None]):
 
     def action_show_map(self) -> None:
         self.push_screen(MapScreen(self.state))
+
+    def action_show_audit(self) -> None:
+        self.push_screen(AuditScreen(self.state))
 
     def action_node_detail(self) -> None:
         node = self._selected_node()

@@ -11,6 +11,7 @@ marshalling back (Textual's `call_from_thread`).
 
 from __future__ import annotations
 
+import base64
 import errno
 import glob
 import grp
@@ -162,9 +163,68 @@ def _fmt_telemetry(tel: dict[str, Any]) -> str:
     return "  ".join(bits) or "telemetry"
 
 
+def _expand_payload(portnum: str, payload: bytes) -> dict[str, Any]:
+    """Decode a Data payload into the dict shape the packet formatters expect."""
+    from google.protobuf.json_format import MessageToDict
+    from meshtastic.protobuf import mesh_pb2, telemetry_pb2
+
+    if portnum == "POSITION_APP":
+        return {"position": MessageToDict(mesh_pb2.Position.FromString(payload))}
+    if portnum == "NODEINFO_APP":
+        return {"user": MessageToDict(mesh_pb2.User.FromString(payload))}
+    if portnum == "TELEMETRY_APP":
+        return {"telemetry": MessageToDict(telemetry_pb2.Telemetry.FromString(payload))}
+    return {}
+
+
+def _try_published_decrypt(raw: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+    """Open a packet our node has no key for, using only PUBLISHED keys.
+
+    These keys ship in Meshtastic's own source and the protobuf documents them
+    as "only minimally secure, because they are listed in this source code", so
+    reading traffic that uses one is what every client already does. This never
+    attempts to recover a key that is actually secret.
+
+    Returns (decoded_dict, key_label), or None if no published key applies.
+    """
+    blob = raw.get("encrypted")
+    if not blob:
+        return None
+    if isinstance(blob, str):
+        try:
+            blob = base64.b64decode(blob)
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        from . import crypto
+
+        got = crypto.try_keys(raw.get("id"), raw.get("from"), bytes(blob))
+    except Exception:  # noqa: BLE001 - never let this break the packet feed
+        log.debug("published-key decrypt failed", exc_info=True)
+        return None
+    if got is None:
+        return None
+
+    payload = bytes(got.data.payload)
+    decoded: dict[str, Any] = {"portnum": got.portnum, "payload": payload}
+    if got.portnum == "TEXT_MESSAGE_APP":
+        decoded["text"] = payload.decode("utf-8", errors="replace")
+    else:
+        try:
+            decoded.update(_expand_payload(got.portnum, payload))
+        except Exception:  # noqa: BLE001 - a summary is better than nothing
+            pass
+    return decoded, got.key_label
+
+
 def flatten(raw: dict[str, Any]) -> Packet:
     """Turn a meshtastic packet dict into a display-ready Packet."""
     decoded = raw.get("decoded") or {}
+    decrypted_with: str | None = None
+    if not decoded and raw.get("encrypted"):
+        opened = _try_published_decrypt(raw)
+        if opened is not None:
+            decoded, decrypted_with = opened
     portnum = decoded.get("portnum") or ("ENCRYPTED" if raw.get("encrypted") else "UNKNOWN")
 
     if portnum == "TEXT_MESSAGE_APP":
@@ -211,6 +271,7 @@ def flatten(raw: dict[str, Any]) -> Packet:
         hops=hops,
         packet_id=raw.get("id"),
         encrypted=portnum == "ENCRYPTED",
+        decrypted_with=decrypted_with,
         raw=raw,
     )
 
@@ -383,6 +444,7 @@ class SerialLink(RadioLink):
         except Exception:  # noqa: BLE001
             info["firmware"] = ""
         info["channels"] = self._channel_names(interface)
+        info["channel_security"] = self._channel_security(interface)
         self.emit("connected", info)
 
         # Seed the node table with whatever the device already knows.
@@ -411,6 +473,34 @@ class SerialLink(RadioLink):
         except Exception:  # noqa: BLE001
             pass
         return names or ["LongFast"]
+
+    @staticmethod
+    def _channel_security(interface: Any) -> list[dict[str, Any]]:
+        """Grade our OWN channels, where the PSK is genuinely ours to inspect."""
+        from . import crypto
+
+        out: list[dict[str, Any]] = []
+        try:
+            channels = getattr(interface.localNode, "channels", None) or []
+            for idx, ch in enumerate(channels):
+                role = getattr(ch, "role", None)
+                if role is not None and int(role) == 0:
+                    continue
+                settings = getattr(ch, "settings", None)
+                name = getattr(settings, "name", "") or ""
+                psk = bytes(getattr(settings, "psk", b"") or b"")
+                level, detail = crypto.classify_psk(psk)
+                expanded = crypto.expand_psk(psk)
+                out.append({
+                    "index": idx,
+                    "name": name or ("LongFast" if idx == 0 else f"ch{idx}"),
+                    "level": level,
+                    "detail": detail,
+                    "hash": crypto.channel_hash(name, expanded) if expanded else None,
+                })
+        except Exception:  # noqa: BLE001
+            log.debug("could not read channel security", exc_info=True)
+        return out
 
     # ---------------------------------------------------------------- send
 

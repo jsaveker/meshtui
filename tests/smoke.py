@@ -120,6 +120,46 @@ async def main() -> int:
         if not sparked:
             problems.append("no node accumulated SNR history")
 
+        # --- published-key decryption + audit screen ---
+        import base64 as _b64, time as _t
+        from meshtui import crypto as _crypto
+        from meshtui.radio import flatten as _flatten
+        from meshtastic.protobuf import mesh_pb2 as _m, portnums_pb2 as _pn
+
+        _data = _m.Data(portnum=_pn.PortNum.TEXT_MESSAGE_APP, payload=b"audit probe")
+        _pid, _node = 0x1234abcd, 0x33001111
+        _ct = _crypto.decrypt(_crypto.expand_psk(bytes([4])), _pid, _node,
+                              _data.SerializeToString())
+        _pkt = _flatten({"from": _node, "to": 0xFFFFFFFF, "fromId": "!33001111",
+                         "toId": "^all", "id": _pid, "channel": 77, "rxTime": _t.time(),
+                         "encrypted": _b64.b64encode(_ct).decode()})
+        if _pkt.decrypted_with != "simple3":
+            problems.append(f"published-key decrypt failed: {_pkt.decrypted_with}")
+        if "audit probe" not in _pkt.summary:
+            problems.append("decrypted payload not surfaced in the summary")
+        app.state.add_packet(_pkt)
+        if not app.state.foreign_channels.get(77, None):
+            problems.append("foreign channel not tracked")
+        elif app.state.foreign_channels[77].key_label != "simple3":
+            problems.append("foreign channel not flagged as using a published key")
+
+        # a real random PSK must stay shut
+        _strong = _crypto.decrypt(os.urandom(32), _pid, _node, _data.SerializeToString())
+        _shut = _flatten({"from": _node, "to": 0xFFFFFFFF, "fromId": "!33001111",
+                          "toId": "^all", "id": _pid, "channel": 78, "rxTime": _t.time(),
+                          "encrypted": _b64.b64encode(_strong).decode()})
+        if _shut.decrypted_with is not None or _shut.portnum != "ENCRYPTED":
+            problems.append("a random-PSK packet was wrongly reported as decrypted")
+
+        await pilot.press("a"); await pilot.pause(0.5)
+        if type(app.screen).__name__ != "AuditScreen":
+            problems.append("'a' did not open the audit screen")
+        else:
+            app.screen.view.render_report()
+        await pilot.press("escape"); await pilot.pause(0.3)
+        if type(app.screen).__name__ == "AuditScreen":
+            problems.append("escape did not close the audit screen")
+
         # --- braille map ---
         await pilot.press("m")
         await pilot.pause(0.5)

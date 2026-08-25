@@ -82,6 +82,8 @@ class Packet:
     hops: int | None = None
     packet_id: int | None = None
     encrypted: bool = False
+    # Set when a PUBLISHED key decrypted this packet - never a recovered secret.
+    decrypted_with: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property

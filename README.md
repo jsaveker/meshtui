@@ -85,6 +85,8 @@ you hear directly:
   SNR / hops / age.
 - **Packet inspector** — full decoded protobuf and a hex dump for any packet.
 - **History** — everything logged to SQLite, restored on startup, exportable to CSV.
+- **Channel security audit** — grades your own channels' keys and flags any traffic
+  on the mesh that is using a key published in Meshtastic's source.
 - **Demo mode** — a synthetic mesh, so you can try the whole thing with no hardware.
 
 ## Quick start
@@ -128,6 +130,7 @@ meshtui --no-store           # do not persist anything to disk
 meshtui --db /path/mesh.db   # use a specific database
 meshtui --stats              # print database summary and exit
 meshtui --export packets:out.csv   # dump a table to CSV and exit
+meshtui --audit              # offline channel security audit, then exit
 ```
 
 Only one process can hold the serial port at a time — the meshtastic library opens
@@ -168,6 +171,7 @@ so `meshtui` would only run after you exit it, back in the original shell.)
 | `enter` | node detail, or inspect the selected packet |
 | `i` | inspect the selected packet |
 | `m` | open the map |
+| `a` | channel security audit |
 | `p` | pause / resume the packet feed |
 | `f` | cycle packet filter (all / chatty / text only) |
 | `s` | cycle node sort (heard / name / snr / hops / packets) |
@@ -218,6 +222,60 @@ cost 4, so 60 emoji already exceed the limit. For `/dm <node> <text>` only `<tex
 is counted, since the rest never goes on the air. Over-length messages are refused
 with an explanation, and your text is left in the box to trim.
 
+## Channel security audit (`a`)
+
+Meshtastic's default channel key, and every single-byte "simple" key shorthand,
+are printed in the firmware's own source. The protobuf documenting them says so
+outright:
+
+> These psks should be treated as only minimally secure, because they are listed
+> in this source code.
+
+meshtui uses that fact two ways. It grades **your own** channels from the keys on
+your node:
+
+```
+ #  name        verdict       hash   why
+ 0  LongFast    NOT PRIVATE   8      single-byte shorthand 'default', listed in the firmware source
+ 1  Ops         ok            91     256-bit key
+ 2  Scouts      WEAK          44     4 bytes zero-padded to 16 - only 32 bits of key
+ 3  Open        NOT PRIVATE   -      empty key - inherits the primary channel, or no crypto
+```
+
+That `WEAK` row is worth knowing about: the firmware **zero-pads any PSK shorter
+than 16 bytes** (`Channels.cpp:242`), so a 4-byte key really is a 32-bit keyspace.
+
+And it reports which channels on the air are readable by anyone:
+
+```
+ hash  packets  senders  status
+  143       31        1  no published key applies
+   77        1        1  PUBLIC KEY (simple3)
+```
+
+Packets opened this way are tagged `[pub]` in the feed so they are never mistaken
+for traffic that was actually private. `meshtui --audit` runs the same report
+offline over a captured database.
+
+**This only ever tries keys that Meshtastic publishes.** A channel using a real
+random PSK is AES-128 or AES-256 and is not readable — by this tool or any other.
+The audit exists to tell you when a channel is *not* protected, which is a thing
+worth knowing, and to be honest about what leaks regardless.
+
+### What leaks even when the payload does not
+
+Sender, destination, packet id, hop count, signal strength and the 8-bit channel
+hash all travel in the clear on every packet. The audit's third table builds an
+activity map from exactly that — who transmits, on which channels, from how far
+away — and needs no key at all. Encryption protects message content, not the fact
+that you are talking.
+
+The crypto is pinned to upstream's own test vectors in `tests/test_crypto.py`,
+including the nonce vector from
+`meshtastic/firmware test/test_crypto/test_main.cpp`. That matters: a wrong nonce
+would make everything fail to decrypt, which looks identical to "every channel is
+strong".
+
 ## History and privacy
 
 Everything is logged to SQLite at `~/.local/share/meshtui/mesh.db` (override with
@@ -246,6 +304,7 @@ sqlite3 ~/.local/share/meshtui/mesh.db \
   generates synthetic traffic so the UI runs without hardware.
 - `store.py` — SQLite persistence, written on a background thread
 - `geo.py` — haversine, bearing and km-offset helpers
+- `crypto.py` — channel key expansion, the nonce, AES-CTR, and PSK grading
 - `app.py` — the Textual app, keybindings, and the radio-to-UI thread bridge
 - `widgets/canvas.py` — braille drawing surface (dots, lines, circles, labels)
 - `widgets/` — node table, packet feed, chat, stats, map, node detail, inspector
@@ -258,6 +317,7 @@ TCP, BLE or MQTT transport means writing another `RadioLink` subclass and nothin
 
 ```sh
 uv run python tests/smoke.py    # headless end-to-end run against the demo mesh
+uv run python tests/test_crypto.py  # crypto pinned to upstream's test vectors
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

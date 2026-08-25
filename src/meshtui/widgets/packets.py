@@ -162,6 +162,10 @@ class PacketFeed(DataTable):
         else:
             line.append("   ")
 
+        if packet.decrypted_with:
+            # Opened with a key that is published upstream - flag it so this is
+            # never mistaken for traffic that was actually private.
+            line.append("[pub] ", style="bold red")
         line.append(
             packet.summary,
             style="white" if packet.portnum == "TEXT_MESSAGE_APP" else "grey70",

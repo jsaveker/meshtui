@@ -15,6 +15,56 @@ RATE_WINDOW = 300.0  # seconds of history kept for the packets/min figure
 
 
 @dataclass
+class ForeignChannel:
+    """A channel our node holds no key for.
+
+    Identified only by the 8-bit hash every packet carries in the clear, so
+    distinct channels can collide. Everything here is metadata - it needs no
+    key at all, which is rather the point.
+    """
+
+    hash: int
+    packets: int = 0
+    senders: set[str] = field(default_factory=set)
+    ports: Counter[str] = field(default_factory=Counter)
+    first_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
+    snr_min: float | None = None
+    snr_max: float | None = None
+    hops_min: int | None = None
+    hops_max: int | None = None
+    key_label: str | None = None      # set when a published key decrypts it
+    sample: str | None = None
+
+    @property
+    def readable(self) -> bool:
+        return self.key_label is not None
+
+    def observe(self, packet: Packet) -> None:
+        self.packets += 1
+        self.senders.add(packet.from_id)
+        self.ports[packet.portnum] += 1
+        self.last_seen = packet.ts
+        if packet.snr is not None:
+            self.snr_min = packet.snr if self.snr_min is None else min(self.snr_min, packet.snr)
+            self.snr_max = packet.snr if self.snr_max is None else max(self.snr_max, packet.snr)
+        if packet.hops is not None:
+            self.hops_min = packet.hops if self.hops_min is None else min(self.hops_min, packet.hops)
+            self.hops_max = packet.hops if self.hops_max is None else max(self.hops_max, packet.hops)
+
+
+@dataclass
+class LocalChannel:
+    """One of our own node's channels, where we can see the key."""
+
+    index: int
+    name: str
+    level: str = "UNKNOWN"
+    detail: str = ""
+    hash: int | None = None
+
+
+@dataclass
 class Stats:
     started: float = field(default_factory=time.time)
     total: int = 0
@@ -53,6 +103,8 @@ class MeshState:
         self.chat: deque[ChatMessage] = deque(maxlen=CHAT_BUFFER)
         self.stats = Stats()
         self.channels: list[str] = []
+        self.local_channels: list[LocalChannel] = []
+        self.foreign_channels: dict[int, ForeignChannel] = {}
         self.my_node_id: str | None = None
         self.my_node_name: str = ""
         self.device_path: str = ""
@@ -161,6 +213,17 @@ class MeshState:
     def add_packet(self, packet: Packet) -> None:
         self.packets.append(packet)
         self.stats.record(packet)
+        # Packets we could not decrypt carry the channel HASH here; decoded
+        # ones carry the channel INDEX. Only the former are "foreign".
+        if packet.portnum == "ENCRYPTED" or packet.decrypted_with:
+            channel = self.foreign_channels.get(packet.channel)
+            if channel is None:
+                channel = ForeignChannel(hash=packet.channel, first_seen=packet.ts)
+                self.foreign_channels[packet.channel] = channel
+            channel.observe(packet)
+            if packet.decrypted_with and channel.key_label is None:
+                channel.key_label = packet.decrypted_with
+                channel.sample = packet.summary[:60]
         node = self.nodes.get(packet.from_id)
         if node is not None:
             node.packets += 1
