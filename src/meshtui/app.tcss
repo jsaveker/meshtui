@@ -1,0 +1,168 @@
+Screen {
+    layers: base modal;
+    background: $surface;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#main {
+    height: 1fr;
+}
+
+#left {
+    width: 64;
+    min-width: 34;
+}
+
+#right {
+    width: 1fr;
+}
+
+NodeTable {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0;
+    scrollbar-size-vertical: 1;
+}
+
+StatsPane {
+    height: 13;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0 1;
+}
+
+PacketFeed {
+    height: 2fr;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0;
+    scrollbar-size-vertical: 1;
+}
+
+PacketFeed > .datatable--cursor {
+    background: $accent 30%;
+    color: $text;
+}
+
+ChatPane {
+    height: 1fr;
+    min-height: 12;
+    border: round $primary;
+    border-title-align: left;
+}
+
+#chat-tabs {
+    height: 2;
+    margin: 0 1;
+}
+
+#chat-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+#chat-input {
+    height: 3;
+    border: none;
+    border-top: solid $primary-darken-2;
+    background: $surface;
+    padding: 0 1;
+}
+
+#chat-input:focus {
+    background: $boost;
+}
+
+/* Scoped deliberately: a bare `*:focus-within` also lights up the layout
+   containers, drawing spurious nested frames around every pane. */
+NodeTable:focus,
+StatsPane:focus,
+PacketFeed:focus,
+ChatPane:focus-within {
+    border: round $accent;
+}
+
+NodeDetail {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#detail-box {
+    width: 62;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    background: $panel;
+    border: round $accent;
+}
+
+#detail-help {
+    margin-top: 1;
+}
+
+MapScreen {
+    background: $surface;
+}
+
+#map-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+MapView {
+    height: 1fr;
+    width: 1fr;
+    background: $surface;
+}
+
+PacketInspector {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#inspect-box {
+    width: 86;
+    height: 80%;
+    padding: 1 2;
+    background: $panel;
+    border: round $accent;
+    scrollbar-size-vertical: 1;
+}
+
+#inspect-help {
+    dock: bottom;
+    height: 1;
+    background: $panel;
+    color: $text;
+}
+
+HelpScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#help-box {
+    width: 72;
+    height: 80%;
+    padding: 1 2;
+    background: $panel;
+    border: round $accent;
+    scrollbar-size-vertical: 1;
+}
+
+#help-foot {
+    dock: bottom;
+    height: 1;
+    background: $panel;
+    color: $text;
+}

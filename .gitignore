@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+
+# meshtui runtime artefacts.
+# The database holds real mesh traffic - node IDs, GPS positions of other
+# people's radios, and message content. Never commit one.
+*.db
+*.db-wal
+*.db-shm
+*.csv
+meshtui.log
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

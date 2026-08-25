@@ -1,0 +1,155 @@
+"""Normalized data types shared between the radio layer and the UI.
+
+The meshtastic library hands us loosely-typed dicts straight off the wire.
+Everything crossing into the UI gets converted to one of these first, so the
+widgets never have to know about protobuf field names.
+"""
+
+from __future__ import annotations
+
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
+
+BROADCAST = "^all"
+SPARK_WIDTH = 8
+
+# Fallback if the protobuf constant cannot be read; radio.max_payload_bytes()
+# prefers the value compiled into the installed meshtastic library.
+DEFAULT_MAX_PAYLOAD = 233
+
+
+def outgoing_payload(entry: str) -> str | None:
+    """The text that a chat entry would actually transmit.
+
+    Returns None for entries that never reach the air (local slash commands),
+    so the byte counter and the length check can ignore them.
+    """
+    entry = entry.strip()
+    if not entry:
+        return None
+    if entry.startswith("/"):
+        parts = entry.split(maxsplit=2)
+        if parts[0].lower() == "/dm":
+            # "/dm <node> <text>" - only <text> is transmitted.
+            return parts[2] if len(parts) >= 3 else ""
+        return None
+    return entry
+
+
+def payload_bytes(text: str) -> int:
+    """Meshtastic limits the payload in BYTES, so multi-byte characters
+    (accents, emoji) cost more than one each."""
+    return len(text.encode("utf-8"))
+
+# portnum -> (short label, colour) for the packet feed
+PORT_STYLES: dict[str, tuple[str, str]] = {
+    "TEXT_MESSAGE_APP": ("TEXT", "bright_white"),
+    "POSITION_APP": ("POS", "cyan"),
+    "NODEINFO_APP": ("NODE", "green"),
+    "TELEMETRY_APP": ("TELEM", "yellow"),
+    "ROUTING_APP": ("ROUTE", "magenta"),
+    "ADMIN_APP": ("ADMIN", "red"),
+    "TRACEROUTE_APP": ("TRACE", "bright_magenta"),
+    "NEIGHBORINFO_APP": ("NEIGH", "bright_blue"),
+    "WAYPOINT_APP": ("WAYPT", "bright_cyan"),
+    "STORE_FORWARD_APP": ("STOR", "blue"),
+    "RANGE_TEST_APP": ("RANGE", "bright_yellow"),
+    "DETECTION_SENSOR_APP": ("DETECT", "orange1"),
+    "PRIVATE_APP": ("PRIV", "grey62"),
+}
+
+
+def port_label(portnum: str) -> tuple[str, str]:
+    if portnum in PORT_STYLES:
+        return PORT_STYLES[portnum]
+    return (portnum.replace("_APP", "")[:6] or "?", "grey62")
+
+
+@dataclass
+class Packet:
+    """One received packet, flattened for display."""
+
+    ts: float
+    from_id: str
+    to_id: str
+    portnum: str
+    summary: str
+    channel: int = 0
+    snr: float | None = None
+    rssi: int | None = None
+    hops: int | None = None
+    packet_id: int | None = None
+    encrypted: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_broadcast(self) -> bool:
+        return self.to_id in (BROADCAST, "!ffffffff")
+
+
+@dataclass
+class Node:
+    """A node in the mesh, merged from NodeDB snapshots and live packets."""
+
+    num: int
+    node_id: str
+    long_name: str = ""
+    short_name: str = ""
+    hw_model: str = ""
+    role: str = ""
+    snr: float | None = None
+    rssi: int | None = None
+    hops: int | None = None
+    battery: int | None = None
+    voltage: float | None = None
+    ch_util: float | None = None
+    air_util: float | None = None
+    uptime: int | None = None
+    lat: float | None = None
+    lon: float | None = None
+    alt: int | None = None
+    last_heard: float | None = None
+    first_seen: float = field(default_factory=time.time)
+    packets: int = 0
+    is_self: bool = False
+    via_mqtt: bool = False
+    # Recent per-packet SNR readings, oldest first, for the trend sparkline.
+    snr_history: deque[float] = field(default_factory=lambda: deque(maxlen=SPARK_WIDTH))
+
+    @property
+    def name(self) -> str:
+        return self.long_name or self.short_name or self.node_id
+
+    @property
+    def label(self) -> str:
+        """Short display name, preferring the 4-char short name."""
+        return self.short_name or self.long_name[:8] or self.node_id[-4:]
+
+    @property
+    def age(self) -> float | None:
+        if self.last_heard is None:
+            return None
+        return max(0.0, time.time() - self.last_heard)
+
+    @property
+    def has_position(self) -> bool:
+        return self.lat is not None and self.lon is not None
+
+
+@dataclass
+class ChatMessage:
+    ts: float
+    from_id: str
+    from_name: str
+    to_id: str
+    text: str
+    channel: int = 0
+    outgoing: bool = False
+    packet_id: int | None = None
+    acked: bool = False
+
+    @property
+    def is_dm(self) -> bool:
+        return self.to_id not in (BROADCAST, "!ffffffff")

@@ -1,0 +1,270 @@
+# meshtui
+
+A terminal dashboard for a [Meshtastic](https://meshtastic.org) mesh: live packet
+feed, node table, chat, mesh statistics, and a braille map of where everything is
+— all in one TUI, over USB serial.
+
+```
+  * Basecamp Relay  demo://synthetic-mesh  fw 2.5.0.demo   new message from HARB
+╭─ nodes ──────────────────────────────────────────────────────╮╭─ packets - all ────────────────────────────────────╮
+│    Node              SNR    Trend     Hop  Bat   Pkt   Age   ││ 16:24:51 POS    HARB  -> all    -14.1dB 2h 37.718… │
+│ *  BASE  Basecamp R  -12.6            dir  41%   0     8m    ││ 16:24:53 TEXT   WXMT  -> all     +2.1dB    "wx sa… │
+│ +  JEEP  Mobile Jee  -8.2          ▃  3    87%   1     1s    ││ 16:24:55 TEXT   HARB  -> all     -6.0dB 2h "radio… │
+│ +  HARB  Harbor Rep  -4.9        ▂▄▄  2    73%   3     2s    ││ 16:24:56 TEXT   HARB  -> all     -4.9dB 2h "headi… │
+│ +  R018  Relay 18    -7.9             1    -     0     4s   ▂││ 16:24:57 POS    JEEP  -> all     -8.2dB 3h 37.754… │
+│ +  WXMT  Weather Ma  +2.1          ▆  dir  64%   1     5s    ││                                                    │
+│ +  R021  Relay 21    -13.0            2    -     0     1m    ││                                                    │
+│ +  R019  Relay 19    +3.5             2    -     0     2m    ││                                                    │
+│ +  R005  Relay 5     -4.2             dir  -     0     4m    ││                                                    │
+│ +  TRAIL Trailhead   -6.2             3    77%   0     6m    ││                                                    │
+│ +  R012  Relay 12    -19.0            1    -     0     7m    ││                                                    │
+│ +  FLD   Field Hand  +7.5             2    75%   0     7m    ││                                                    │
+│ +  R011  Relay 11    +4.7             3    -     0     9m    ││                                                    │
+╰──────────────────────────────────────────────────────────────╯│                                                    │
+╭─ stats ──────────────────────────────────────────────────────╮╰────────────────────────────────────────────────────╯
+│ packets                      5 nodes                      35 │╭─ chat - #LongFast ─────────────────────────────────╮
+│ pkt/min                   40.9 active 15m                 14 ││  LongFast  Ops  Private                            │
+│ sent                         0 direct                      9 ││ ╸━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│ uptime                      9s with gps                   35 ││ 16:24 WXMT: wx says gusts to 30 tonight            │
+│ snr avg                   -5.0 snr best                 +7.9 ││ 16:24 HARB: heading up the ridge, back in an ho    │
+│                                                              ││                                                    │
+│  packet mix                                                  ││                                                    │
+│ TEXT                ##########                             3 ││                                              ▏     │
+│ POS                 #######...                             2 ││────────────────────────────────────────────────────│
+│                                                              ││ message   esc to leave, /help for commands         │
+│                                                              ││                                                    │
+╰──────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────╯
+ q quit  ? help  / chat  p pause feed  f filter  s sort  d dm node  m map  t trace                        ▏^p palette
+```
+
+Press `m` for the map. Nodes are plotted on a braille canvas (2x4 dots per
+terminal cell), centred on your node, with distance rings and links to everything
+you hear directly:
+
+```
+                                                      ⣀ ⢀⡀ ⠤ ⢀⡀ ⡀
+                                                 ⠤ ⠐⠁     ⢀ R009⠈ ⠐⠂⠠⡀
+                                            ⢀⠄ ⠉                       ⠑ ⣀
+                                          ⠐⠂                               ⠤
+                                        ⠐⠁              ⠠ R004        ⢀⡀     ⠢
+                                     ⢀ ⠉                              ⠈⠁ R021 ⠐⠂
+                                    ⡀⠈                ⢀⡀                        ⠐
+                                    ⠁                 ⡨⠁⠐R012⠠⠄ ⣀                ⠐⠄
+                                   ⠃              ⡀ ⠊            ⡿⠧R003            ⠆
+                                  ⠃             ⢀ ⠁            ⢀⡜R023              ⠠⡀
+                                 ⠆             ⡀⠁        ⠠⠄ ⣀ ⢀⠎     ⠈⠂             ⢀
+                                ⢠         ⢀⣀   ⠁      ⡀⠈ ⠄ R027⠲⠆ R025 ⠆   ⠶ FLD    ⠈
+                                ⢀         ⠘⠛⠑WXMT⣀⡀ ⢀⠈⡀     ⢠⠊ ⢀⠑R006  ⠠⡀            ⠃
+                                ⠈  TRAIL  ⠈  R011 ⠈⠩⣿⡶R022⣤⣴⣷ R005 R020 ⠄            ⠂
+                                ⠑            ⢠      ⠃ ⢀  ⢈⠟⢟⠲BASE⠘5.0km ⠃10km⡀       ⠘20km
+                                ⠰             ⡄     ⠐⠄ ⢀⠔⠁ ⢸  ⠈⠛⠷R010  ⠐⠁   ⠈⠁ R019  ⠃
+                                 ⡄             ⡀     ⡠⠲⠁   ⠈⡆⢀⡀⠒⢀⠈R024 ⠆            ⠠⠂
+                                 ⢀             ⠁⡀  ⡠⠊   ⠉ ⠐⠂⢇⠉⠁ R018 ⢩⠖JEEP         ⡄
+                                 ⠈⡀        R002 ⠈⠻⡿ R014  ⢀ ⢸⠠ R000 ⠤   ⠈⠑⣶⡆R015   ⢀
+                                  ⠈        ⠉ RIDG ⠁ ⢄     ⠘⠃ R008 ⠔                ⠁
+                                   ⠘        ⠛ HARB    ⠑ ⠠⠄ ⠤ ⢳⠂⠠⠉                 ⠉
+                                    ⠈⠂                       ⢸                   ⠃
+                                      ⠑                       ⡇                ⠘
+                                       ⠈⠂                     ⣣⡀            ⢀⠐⠁
+                                         ⠈⠁⢀⡀                 ⠛⠃R013      ⡠ ⠁
+                                             ⠐⠄                       ⡀ ⠆
+                                               ⠈⠁ ⠤ ⢀⡀           ⣀ ⠔ ⠈
+                                                       ⠉ ⠈⠁ ⠉ ⠈⠁
+ esc back  ↑ pan  + zoom in  - zoom out  f fit  c colour  r rings  i links  ? help  / chat  p pause feed  ▏^p palette
+```
+
+## Features
+
+- **Live packet feed** — every packet, decoded and colour-coded by type, with SNR
+  and hop count. Pause it, filter it, scroll back through it.
+- **Node table** — SNR, hop distance, battery, packet count and age for every node,
+  with a rolling SNR sparkline per node so you can see which links are fading.
+- **Chat** — a tab per channel, plus direct messages. Live byte counter against the
+  mesh's 233-byte payload limit.
+- **Map** — braille-rendered positions, distance rings, pan and zoom, colour by
+  SNR / hops / age.
+- **Packet inspector** — full decoded protobuf and a hex dump for any packet.
+- **History** — everything logged to SQLite, restored on startup, exportable to CSV.
+- **Demo mode** — a synthetic mesh, so you can try the whole thing with no hardware.
+
+## Quick start
+
+Try it with no radio attached:
+
+```sh
+git clone https://github.com/jsaveker/meshtui.git
+cd meshtui
+uv run meshtui --demo
+```
+
+[uv](https://docs.astral.sh/uv/) installs the right Python and all dependencies
+automatically — that one command is the whole setup. Then plug a Meshtastic node
+in over USB and run:
+
+```sh
+uv run meshtui
+```
+
+### Without uv
+
+Any Python 3.11 or newer:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+meshtui --demo
+```
+
+### Options
+
+```sh
+meshtui                      # autodetect a USB node
+meshtui -p /dev/ttyUSB0      # explicit port
+meshtui --demo               # synthetic mesh, no hardware needed
+meshtui --list-ports         # show candidate serial devices
+meshtui --debug              # also write meshtui.log
+meshtui --no-store           # do not persist anything to disk
+meshtui --db /path/mesh.db   # use a specific database
+meshtui --stats              # print database summary and exit
+meshtui --export packets:out.csv   # dump a table to CSV and exit
+```
+
+Only one process can hold the serial port at a time — the meshtastic library opens
+it exclusively, so a second `meshtui` (or the `meshtastic` CLI, or a serial monitor)
+will be told the port is busy.
+
+## Serial permissions
+
+Serial devices are owned by a group that varies by distribution — `dialout` on
+Debian, Ubuntu and Fedora, `uucp` on Arch. meshtui detects which group actually
+owns your device and tells you exactly what to run, so if you hit a permission
+error just read the message. It amounts to:
+
+```sh
+sudo usermod -aG dialout $USER     # or uucp, per the message
+```
+
+**Then log out and back in.** Supplementary groups are fixed at login, so a running
+desktop session keeps the old group set and opening a new terminal will not help.
+To test without logging out, start a shell that has the group first:
+
+```sh
+newgrp dialout     # this replaces your shell
+meshtui            # run as a separate command, inside that new shell
+```
+
+(`newgrp dialout && meshtui` does not work — `newgrp` execs a new interactive shell,
+so `meshtui` would only run after you exit it, back in the original shell.)
+
+## Keys
+
+| key | action |
+|---|---|
+| `?` | key reference overlay |
+| `tab` | switch pane |
+| `/` | focus the message box |
+| `escape` | leave the message box / close an overlay |
+| `enter` | node detail, or inspect the selected packet |
+| `i` | inspect the selected packet |
+| `m` | open the map |
+| `p` | pause / resume the packet feed |
+| `f` | cycle packet filter (all / chatty / text only) |
+| `s` | cycle node sort (heard / name / snr / hops / packets) |
+| `d` | open a direct message with the selected node |
+| `t` | traceroute the selected node |
+| `G` / `end` | jump to the newest packet and resume following |
+| `ctrl+l` | clear the packet feed |
+| `q` | quit |
+
+Scrolling up in the packet feed pauses auto-follow; `G` resumes it.
+
+**While the message box has focus every letter is text**, so the single-key
+shortcuts above are unreachable until you leave it with `escape` or `tab`. The
+footer reflects this — it shows `esc leave chat` while you are typing, and the chat
+pane title reads `typing, esc to leave`. Half-composed text is kept when you escape out.
+
+### Map keys
+
+| key | action |
+|---|---|
+| arrows / `hjkl` | pan |
+| `+` / `-` | zoom |
+| `f` | refit and recentre |
+| `c` | cycle colour: SNR / hops / age |
+| `r` | toggle distance rings |
+| `i` | toggle direct links |
+| `esc` / `m` | back to the dashboard |
+
+## Chat commands
+
+```
+/dm <node> <text>   direct message (node = short name or !id)
+/trace <node>       request a traceroute
+/nodes              list known nodes
+/clear              clear the conversation view
+/help               show help
+```
+
+## Message length
+
+Meshtastic caps a packet's data payload at **233 bytes** (`DATA_PAYLOAD_LEN`, read
+from the installed library at runtime rather than hard-coded). The chat pane shows
+a live counter in its bottom border — `142/233 bytes` — yellow past 85%, red past
+the limit.
+
+The count is in **bytes, not characters**: accented letters cost 2 and most emoji
+cost 4, so 60 emoji already exceed the limit. For `/dm <node> <text>` only `<text>`
+is counted, since the rest never goes on the air. Over-length messages are refused
+with an explanation, and your text is left in the box to trim.
+
+## History and privacy
+
+Everything is logged to SQLite at `~/.local/share/meshtui/mesh.db` (override with
+`--db`, disable entirely with `--no-store`). Nodes and recent chat are restored on
+startup, so the dashboard is useful before the first packet arrives. Writes go
+through a background thread, so disk I/O never blocks the UI.
+
+```sh
+meshtui --stats
+meshtui --export nodes:nodes.csv
+sqlite3 ~/.local/share/meshtui/mesh.db \
+  "SELECT portnum, COUNT(*) FROM packets GROUP BY 1 ORDER BY 2 DESC"
+```
+
+> **That database contains other people's data** — node IDs, GPS positions and
+> message content from every radio your node hears. It stays on your machine;
+> meshtui never uploads anything. It lives outside the repository and `*.db` is
+> gitignored, but be deliberate before sharing one, and remember that a public
+> mesh is not a private channel.
+
+## How it works
+
+- `model.py` — normalized `Packet` / `Node` / `ChatMessage` types
+- `state.py` — `MeshState`: node database, packet ring buffer, chat log, stats
+- `radio.py` — transports. `SerialLink` wraps the meshtastic library; `DemoLink`
+  generates synthetic traffic so the UI runs without hardware.
+- `store.py` — SQLite persistence, written on a background thread
+- `geo.py` — haversine, bearing and km-offset helpers
+- `app.py` — the Textual app, keybindings, and the radio-to-UI thread bridge
+- `widgets/canvas.py` — braille drawing surface (dots, lines, circles, labels)
+- `widgets/` — node table, packet feed, chat, stats, map, node detail, inspector
+
+The radio layer only ever calls one `emit(kind, payload)` callback, from its own
+thread; `app.py` marshals that onto the UI thread with `call_from_thread`. Adding a
+TCP, BLE or MQTT transport means writing another `RadioLink` subclass and nothing else.
+
+## Development
+
+```sh
+uv run python tests/smoke.py    # headless end-to-end run against the demo mesh
+uv run python tests/live.py 30  # connect to real hardware and report what it sees
+```
+
+`tests/smoke.py` drives the real app through Textual's headless pilot: every
+keybinding, the map, the inspector, send and ack, slash commands, the payload
+limit, and a database round-trip.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
