@@ -129,6 +129,9 @@ class MeshState:
         self.relays: dict[int, RelayStat] = {}
         self.relay_edges: Counter[tuple[str, int]] = Counter()
         self.mqtt_packets: int = 0
+        # Newest packet timestamp folded into state, so a restart can
+        # replay only what the persisted snapshot has not already seen.
+        self.last_packet_ts: float = 0.0
         self.my_node_id: str | None = None
         self.my_node_name: str = ""
         self.device_path: str = ""
@@ -234,17 +237,25 @@ class MeshState:
 
     # -------------------------------------------------------------- packets
 
-    def add_packet(self, packet: Packet, historical: bool = False) -> None:
+    def add_packet(self, packet: Packet, historical: bool = False,
+                   fold: bool = True) -> None:
         """Fold a packet into every derived view.
 
         `historical` marks a packet replayed from the database on startup: it
         rebuilds node and mesh state exactly as a live packet would, but must
         not inflate this session's counters or re-count per-node totals that
         were already restored from the nodes table.
+
+        `fold=False` adds the packet to the visible buffer only. Startup uses
+        it to show scrollback for packets the persisted snapshot has already
+        counted, which would otherwise be tallied twice.
         """
         self.packets.append(packet)
         if not historical:
             self.stats.record(packet)
+        if not fold:
+            return
+        self.last_packet_ts = max(self.last_packet_ts, packet.ts)
         if packet.via_mqtt:
             self.mqtt_packets += 1
         self._record_relay(packet)

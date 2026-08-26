@@ -14,8 +14,8 @@ from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
 from .radio import DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes
-from .state import LocalChannel, MeshState
-from .store import Store
+from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
+from .store import STATE_TS, Store
 from .widgets.audit import AuditScreen
 from .widgets.chat import ChatPane, LeaveChat
 from .widgets.detail import NodeDetail
@@ -133,6 +133,7 @@ class MeshTUI(App[None]):
         for record in self.store.known_nodes():
             first_seen = record.pop("_first_seen", None)
             packets = record.pop("_packets", 0)
+            derived = record.pop("_derived", {})
             try:
                 node = self.state.upsert_node(record)
             except ValueError:
@@ -140,7 +141,9 @@ class MeshTUI(App[None]):
             if first_seen:
                 node.first_seen = first_seen
             node.packets = packets
+            self._apply_derived(node, derived)
             restored += 1
+        self._restore_aggregates()
         for message in self.store.recent_messages():
             self.state.add_chat(message)
         if restored or self.state.chat:
@@ -167,8 +170,15 @@ class MeshTUI(App[None]):
 
     def _apply_replay(self, packets: list[Packet]) -> None:
         """Fold replayed packets into state on the UI thread, then connect."""
+        # Everything goes into the visible buffer so the feed has scrollback,
+        # but only packets newer than the persisted snapshot are folded into
+        # the aggregates - the rest are already counted in it.
+        since = self.state.last_packet_ts
+        folded = 0
         for packet in packets:
-            self.state.add_packet(packet, historical=True)
+            fold = packet.ts > since
+            folded += fold
+            self.state.add_packet(packet, historical=True, fold=fold)
         if packets:
             feed = self.query_one(PacketFeed)
             feed.rerender(self.state, limit=FEED_RESTORE_ROWS)
@@ -176,17 +186,87 @@ class MeshTUI(App[None]):
                 f"---- {len(packets)} packets replayed from history; "
                 f"live traffic follows ----", "bold grey54")
             span = packets[-1].ts - packets[0].ts
+            detail = f"{folded} new" if folded else "already up to date"
             self.note(
                 f"replayed {len(packets)} packets covering "
-                f"{fmt_duration(span)} of history", "grey70")
+                f"{fmt_duration(span)} of history ({detail})", "grey70")
         self._tick()
         self._start_link()
 
+    @staticmethod
+    def _apply_derived(node, derived: dict) -> None:
+        """Reload sparklines, sensors and motion saved alongside the node."""
+        if not derived:
+            return
+        for value in derived.get("snr_history") or []:
+            try:
+                node.snr_history.append(float(value))
+            except (TypeError, ValueError):
+                pass
+        env = derived.get("env") or {}
+        if env:
+            node.env.update({k: float(v) for k, v in env.items()
+                             if isinstance(v, (int, float))})
+            node.env_ts = derived.get("env_ts")
+        stats = derived.get("local_stats") or {}
+        if stats:
+            node.local_stats.update({k: float(v) for k, v in stats.items()
+                                     if isinstance(v, (int, float))})
+            node.local_stats_ts = derived.get("local_stats_ts")
+        for point in derived.get("track") or []:
+            if isinstance(point, (list, tuple)) and len(point) == 3:
+                node.track.append((float(point[0]), float(point[1]), float(point[2])))
+        for key in ("speed_mps", "heading_deg", "sats", "precision_bits"):
+            if derived.get(key) is not None:
+                setattr(node, key, derived[key])
+        if derived.get("location_source"):
+            node.location_source = derived["location_source"]
+
+    def _restore_aggregates(self) -> None:
+        """Reload relay and channel counters saved as a snapshot."""
+        store = self.store
+        if store is None:
+            return
+        for row in store.load_relays():
+            self.state.relays[row["byte"]] = RelayStat(
+                byte=row["byte"], packets=row["packets"], origins=set(row["origins"]),
+                first_seen=row["first_seen"] or time.time(),
+                last_seen=row["last_seen"] or time.time(),
+                snr_sum=row["snr_sum"], snr_n=row["snr_n"],
+            )
+        for origin, byte, count in store.load_relay_edges():
+            self.state.relay_edges[(origin, byte)] = count
+        for row in store.load_foreign_channels():
+            channel = ForeignChannel(
+                hash=row["hash"], packets=row["packets"] or 0,
+                senders=row["senders"], first_seen=row["first_seen"] or time.time(),
+                last_seen=row["last_seen"] or time.time(),
+                snr_min=row["snr_min"], snr_max=row["snr_max"],
+                hops_min=row["hops_min"], hops_max=row["hops_max"],
+                key_label=row["key_label"], sample=row["sample"],
+            )
+            channel.ports.update(row["ports"])
+            self.state.foreign_channels[row["hash"]] = channel
+        self.state.last_packet_ts = float(store.get_meta(STATE_TS, 0.0) or 0.0)
+
     def _persist_nodes(self) -> None:
-        if self.store is None or not self.store.enabled:
+        """Write the whole derived snapshot: node rows, the state folded in
+        from packets, and the mesh-wide relay and channel counters."""
+        store = self.store
+        if store is None or not store.enabled:
             return
         for node in self.state.nodes.values():
-            self.store.save_node(node)
+            store.save_node(node)
+            store.save_node_derived(node)
+        for relay in self.state.relays.values():
+            store.save_relay(relay.byte, relay.packets, relay.origins,
+                             relay.first_seen, relay.last_seen,
+                             relay.snr_sum, relay.snr_n)
+        for (origin, byte), count in self.state.relay_edges.items():
+            store.save_relay_edge(origin, byte, count)
+        for channel in self.state.foreign_channels.values():
+            store.save_foreign_channel(channel)
+        store.set_meta(STATE_TS, self.state.last_packet_ts)
 
     # ------------------------------------------------- radio -> UI bridge
 

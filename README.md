@@ -360,6 +360,24 @@ few thousand packets. Replayed packets are marked historical: they rebuild state
 do not inflate this session's packet counter or per-node totals. Tune with
 `--restore-limit N`, or `--restore-limit 0` to skip it.
 
+Derived state is **also stored in its own right**, so it survives losing the packets
+it came from. Sparklines, sensor readings, node stats, motion and trails live in
+extra `nodes` columns; relay counters and channel observations get their own tables.
+A `meta.state_ts` row records the newest packet already folded into that snapshot,
+so a restart replays only what is genuinely new — the rest is shown as scrollback
+without being counted twice.
+
+That means you can prune the packets table (it is the bulk of the database) and keep
+every derived view intact:
+
+```sh
+sqlite3 ~/.local/share/meshtui/mesh.db \
+  "DELETE FROM packets WHERE ts < strftime('%s','now') - 7*86400; VACUUM;"
+```
+
+Older databases are migrated in place on first open — columns are added, nothing is
+rewritten.
+
 ```sh
 meshtui --stats
 meshtui --export nodes:nodes.csv

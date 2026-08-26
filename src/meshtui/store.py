@@ -21,6 +21,22 @@ from .model import ChatMessage, Node, Packet
 
 log = logging.getLogger(__name__)
 
+
+def _json_list(raw: Any) -> list:
+    try:
+        value = json.loads(raw) if raw else []
+    except Exception:  # noqa: BLE001
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _json_dict(raw: Any) -> dict:
+    try:
+        value = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return value if isinstance(value, dict) else {}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS packets (
     rowid_      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +69,43 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
 
+CREATE TABLE IF NOT EXISTS meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS relays (
+    byte        INTEGER PRIMARY KEY,
+    packets     INTEGER DEFAULT 0,
+    origins     TEXT,
+    first_seen  REAL,
+    last_seen   REAL,
+    snr_sum     REAL DEFAULT 0,
+    snr_n       INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS relay_edges (
+    origin      TEXT,
+    relay_byte  INTEGER,
+    packets     INTEGER DEFAULT 0,
+    PRIMARY KEY (origin, relay_byte)
+);
+
+CREATE TABLE IF NOT EXISTS foreign_channels (
+    hash        INTEGER PRIMARY KEY,
+    packets     INTEGER DEFAULT 0,
+    senders     TEXT,
+    ports       TEXT,
+    first_seen  REAL,
+    last_seen   REAL,
+    snr_min     REAL,
+    snr_max     REAL,
+    hops_min    INTEGER,
+    hops_max    INTEGER,
+    key_label   TEXT,
+    sample      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     node_id     TEXT PRIMARY KEY,
     num         INTEGER,
@@ -72,6 +125,29 @@ CREATE TABLE IF NOT EXISTS nodes (
     packets     INTEGER DEFAULT 0
 );
 """
+
+
+# Derived per-node state, added to the nodes table by migration so an existing
+# database keeps working. Without these, pruning the packets table would lose
+# sparklines and sensor readings permanently.
+NODE_EXTRA_COLUMNS: list[tuple[str, str]] = [
+    ("snr_history", "TEXT"),
+    ("env", "TEXT"),
+    ("env_ts", "REAL"),
+    ("local_stats", "TEXT"),
+    ("local_stats_ts", "REAL"),
+    ("speed", "REAL"),
+    ("heading", "REAL"),
+    ("sats", "INTEGER"),
+    ("location_source", "TEXT"),
+    ("precision_bits", "INTEGER"),
+    ("track", "TEXT"),
+]
+
+# Key in the meta table holding the newest packet timestamp already folded into
+# the persisted aggregates, so a replay can resume from there without
+# double-counting.
+STATE_TS = "state_ts"
 
 
 def default_db_path() -> Path:
@@ -98,6 +174,7 @@ class Store:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.path, check_same_thread=False)
             conn.executescript(SCHEMA)
+            self._migrate(conn)
             # WAL keeps readers (e.g. an external sqlite3 shell) from blocking us.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
@@ -111,6 +188,15 @@ class Store:
         self._thread = threading.Thread(target=self._run, name="store", daemon=True)
         self._thread.start()
         return True
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add any derived-state columns an older database is missing."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+        for name, sqltype in NODE_EXTRA_COLUMNS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {sqltype}")
+        conn.commit()
 
     def close(self) -> None:
         if not self.enabled:
@@ -224,6 +310,79 @@ class Store:
              n.snr, n.hops, n.packets),
         )
 
+    def save_node_derived(self, n: Node) -> None:
+        """Persist the state that is folded in from packets rather than sent
+        as node records. Only non-empty values are written, so a session that
+        has not heard from a node cannot erase what we already know."""
+        values: dict[str, Any] = {}
+        if n.snr_history:
+            values["snr_history"] = json.dumps(list(n.snr_history))
+        if n.env:
+            values["env"] = json.dumps(n.env)
+            values["env_ts"] = n.env_ts
+        if n.local_stats:
+            values["local_stats"] = json.dumps(n.local_stats)
+            values["local_stats_ts"] = n.local_stats_ts
+        if n.track:
+            values["track"] = json.dumps([list(p) for p in n.track])
+        for attr, column in (("speed_mps", "speed"), ("heading_deg", "heading"),
+                             ("sats", "sats"), ("location_source", "location_source"),
+                             ("precision_bits", "precision_bits")):
+            value = getattr(n, attr)
+            if value not in (None, ""):
+                values[column] = value
+        if not values:
+            return
+        assignments = ", ".join(f"{k}=?" for k in values)
+        self._put(f"UPDATE nodes SET {assignments} WHERE node_id=?",
+                  (*values.values(), n.node_id))
+
+    def save_relay(self, byte: int, packets: int, origins: Iterable[str],
+                   first_seen: float, last_seen: float, snr_sum: float, snr_n: int) -> None:
+        self._put(
+            "INSERT INTO relays (byte, packets, origins, first_seen, last_seen, snr_sum,"
+            " snr_n) VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(byte) DO UPDATE SET packets=excluded.packets,"
+            " origins=excluded.origins,"
+            " first_seen=MIN(relays.first_seen, excluded.first_seen),"
+            " last_seen=MAX(relays.last_seen, excluded.last_seen),"
+            " snr_sum=excluded.snr_sum, snr_n=excluded.snr_n",
+            (byte, packets, json.dumps(sorted(origins)), first_seen, last_seen,
+             snr_sum, snr_n),
+        )
+
+    def save_relay_edge(self, origin: str, byte: int, packets: int) -> None:
+        self._put(
+            "INSERT INTO relay_edges (origin, relay_byte, packets) VALUES (?,?,?)"
+            " ON CONFLICT(origin, relay_byte) DO UPDATE SET packets=excluded.packets",
+            (origin, byte, packets),
+        )
+
+    def save_foreign_channel(self, ch: Any) -> None:
+        self._put(
+            "INSERT INTO foreign_channels (hash, packets, senders, ports, first_seen,"
+            " last_seen, snr_min, snr_max, hops_min, hops_max, key_label, sample)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(hash) DO UPDATE SET packets=excluded.packets,"
+            " senders=excluded.senders, ports=excluded.ports,"
+            " first_seen=MIN(foreign_channels.first_seen, excluded.first_seen),"
+            " last_seen=MAX(foreign_channels.last_seen, excluded.last_seen),"
+            " snr_min=excluded.snr_min, snr_max=excluded.snr_max,"
+            " hops_min=excluded.hops_min, hops_max=excluded.hops_max,"
+            " key_label=COALESCE(excluded.key_label, foreign_channels.key_label),"
+            " sample=COALESCE(excluded.sample, foreign_channels.sample)",
+            (ch.hash, ch.packets, json.dumps(sorted(ch.senders)),
+             json.dumps(dict(ch.ports)), ch.first_seen, ch.last_seen,
+             ch.snr_min, ch.snr_max, ch.hops_min, ch.hops_max, ch.key_label, ch.sample),
+        )
+
+    def set_meta(self, key: str, value: Any) -> None:
+        self._put(
+            "INSERT INTO meta (key, value) VALUES (?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value)),
+        )
+
     # -------------------------------------------------------------- reading
 
     def _read(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
@@ -298,6 +457,51 @@ class Store:
                                            "voltage": r["voltage"]}
             record["_first_seen"] = r["first_seen"]
             record["_packets"] = r["packets"] or 0
+            keys = r.keys()
+            record["_derived"] = {
+                "snr_history": _json_list(r["snr_history"]) if "snr_history" in keys else [],
+                "env": _json_dict(r["env"]) if "env" in keys else {},
+                "env_ts": r["env_ts"] if "env_ts" in keys else None,
+                "local_stats": _json_dict(r["local_stats"]) if "local_stats" in keys else {},
+                "local_stats_ts": r["local_stats_ts"] if "local_stats_ts" in keys else None,
+                "track": _json_list(r["track"]) if "track" in keys else [],
+                "speed_mps": r["speed"] if "speed" in keys else None,
+                "heading_deg": r["heading"] if "heading" in keys else None,
+                "sats": r["sats"] if "sats" in keys else None,
+                "location_source": (r["location_source"] or "") if "location_source" in keys else "",
+                "precision_bits": r["precision_bits"] if "precision_bits" in keys else None,
+            }
+            out.append(record)
+        return out
+
+    def get_meta(self, key: str, default: Any = None) -> Any:
+        rows = self._read("SELECT value FROM meta WHERE key=?", (key,))
+        if not rows:
+            return default
+        try:
+            return json.loads(rows[0]["value"])
+        except Exception:  # noqa: BLE001
+            return default
+
+    def load_relays(self) -> list[dict[str, Any]]:
+        return [
+            {"byte": r["byte"], "packets": r["packets"] or 0,
+             "origins": _json_list(r["origins"]), "first_seen": r["first_seen"] or 0.0,
+             "last_seen": r["last_seen"] or 0.0, "snr_sum": r["snr_sum"] or 0.0,
+             "snr_n": r["snr_n"] or 0}
+            for r in self._read("SELECT * FROM relays")
+        ]
+
+    def load_relay_edges(self) -> list[tuple[str, int, int]]:
+        return [(r["origin"], r["relay_byte"], r["packets"] or 0)
+                for r in self._read("SELECT * FROM relay_edges")]
+
+    def load_foreign_channels(self) -> list[dict[str, Any]]:
+        out = []
+        for r in self._read("SELECT * FROM foreign_channels"):
+            record = dict(r)
+            record["senders"] = set(_json_list(r["senders"]))
+            record["ports"] = _json_dict(r["ports"])
             out.append(record)
         return out
 

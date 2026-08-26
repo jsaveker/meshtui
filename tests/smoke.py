@@ -284,10 +284,38 @@ async def main() -> int:
         replayed_node = next((n for n in sparked), None)
         if replayed_node and replayed_node.packets < 0:
             problems.append("replay corrupted per-node packet counts")
+        before_relay_packets = sum(r.packets for r in st2.relays.values())
+        app2._persist_nodes()
+        await pilot2.pause(1.0)
         print(f"restored: {len(st2.nodes)} nodes, {len(st2.chat)} messages, "
               f"{len(sparked)} sparklines, {len(st2.packets)} packets replayed, "
               f"session stats.total={st2.stats.total}")
     store2.close()
+
+    # --- derived state must survive losing the packets it was built from ---
+    import sqlite3 as _sq
+    conn = _sq.connect(db); conn.execute("DELETE FROM packets"); conn.commit(); conn.close()
+
+    store3 = Store(db, flush_interval=0.3)
+    assert store3.open()
+    app3 = MeshTUI(demo=False, store=store3)
+    async with app3.run_test(size=(160, 48)) as pilot3:
+        await pilot3.pause(1.5)
+        st3 = app3.state
+        sparked3 = [n for n in st3.nodes.values() if n.snr_history]
+        if len(sparked3) < len(sparked):
+            problems.append(f"sparklines lost when packets were pruned: "
+                            f"{len(sparked)} -> {len(sparked3)}")
+        if len(st3.nodes) < 7:
+            problems.append("nodes lost when packets were pruned")
+        after_relay_packets = sum(r.packets for r in st3.relays.values())
+        if before_relay_packets and after_relay_packets != before_relay_packets:
+            problems.append(f"relay counts changed across prune: "
+                            f"{before_relay_packets} -> {after_relay_packets}")
+        print(f"after pruning all packets: {len(st3.nodes)} nodes, "
+              f"{len(sparked3)} sparklines, {len(st3.relays)} relays, "
+              f"{len(st3.foreign_channels)} channels survived")
+    store3.close()
 
     if problems:
         print("FAIL: " + "; ".join(problems))
