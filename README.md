@@ -370,6 +370,37 @@ including the nonce vector from
 would make everything fail to decrypt, which looks identical to "every channel is
 strong".
 
+## Multiple radios
+
+Signal, hop count, relay share and packet counts all mean *"as heard from here"*.
+Swap the radio and they mean something different, so meshtui separates:
+
+- **Facts** about a node — name, hardware, role, position, sensor readings — are
+  shared. Every radio contributes and they accumulate into one picture of the mesh.
+- **Observations** — SNR, hops, packet counts, sparklines, relay shares, channel
+  sightings — are keyed by the radio that made them, in `node_obs` and the
+  `local_node` column on `packets`, `relays`, `relay_edges` and `foreign_channels`.
+
+On startup the last-attached radio's view is loaded so the dashboard is useful
+immediately, and works with no radio plugged in at all. If a *different* node then
+connects, that view is dropped rather than blended into, and the new radio starts
+its own. Nothing is lost: each radio's history stays in the database under its own
+id, and switching back restores it.
+
+This matters most when one radio is mobile. Merging a portable node's readings from
+all over town into a fixed station's picture would make the relay analysis quietly
+wrong.
+
+```sh
+sqlite3 ~/.local/share/meshtui/mesh.db \
+  "SELECT local_node, COUNT(*) FROM node_obs GROUP BY 1"
+```
+
+Databases from before this split are migrated in place. The previous radio is
+identified from its outgoing messages, `localStats` or routing acknowledgements —
+only the locally attached node's reach the client — and every existing row is
+attributed to it.
+
 ## History and privacy
 
 Everything is logged to SQLite at `~/.local/share/meshtui/mesh.db` (override with

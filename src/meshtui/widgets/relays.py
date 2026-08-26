@@ -67,7 +67,12 @@ class RelayView(Static):
 
     def _sections(self) -> list[object]:
         parts: list[object] = []
-        parts.append(Text("who relays your traffic", style="bold bright_cyan"))
+        me = self.state.my_node_id
+        who = self.state.node_name(me) if me else "this radio"
+        parts.append(Text(f"who relays traffic to {who}", style="bold bright_cyan"))
+        parts.append(Text("  signal and hop counts are relative to this radio's "
+                          "position; another node sees a different mesh",
+                          style="grey42"))
         parts.append(self._relay_table())
         parts.append(Text(""))
         parts.append(self._verdict())

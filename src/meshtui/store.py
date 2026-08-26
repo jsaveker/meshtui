@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
 
+CREATE TABLE IF NOT EXISTS node_obs (
+    local_node  TEXT NOT NULL,
+    node_id     TEXT NOT NULL,
+    snr         REAL,
+    hops        INTEGER,
+    packets     INTEGER DEFAULT 0,
+    last_heard  REAL,
+    snr_history TEXT,
+    PRIMARY KEY (local_node, node_id)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key         TEXT PRIMARY KEY,
     value       TEXT
@@ -149,6 +160,27 @@ NODE_EXTRA_COLUMNS: list[tuple[str, str]] = [
 # double-counting.
 STATE_TS = "state_ts"
 
+# Observation tables are scoped to the radio that did the observing: SNR, hop
+# count and relay share all mean "as heard from here", so merging two radios
+# would silently blend viewpoints.
+SCOPED_TABLES: dict[str, tuple[str, ...]] = {
+    "relays": ("byte",),
+    "relay_edges": ("origin", "relay_byte"),
+    "foreign_channels": ("hash",),
+}
+
+# Node columns that are observations rather than facts about the node itself.
+OBSERVED_COLUMNS = ("snr", "hops", "packets", "last_heard", "snr_history")
+
+
+# Which radio was attached last, so the dashboard can be populated before (or
+# without) a connection.
+LAST_OBSERVER = "last_local_node"
+
+
+def state_ts_key(local_node: str | None) -> str:
+    return f"{STATE_TS}:{local_node}" if local_node else STATE_TS
+
 
 def default_db_path() -> Path:
     root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
@@ -166,6 +198,9 @@ class Store:
         self._conn: sqlite3.Connection | None = None
         self.enabled = False
         self.error: str | None = None
+        # Which radio is doing the observing. Set once the link identifies
+        # itself; everything observer-relative is keyed on it.
+        self.local_node: str | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -190,12 +225,83 @@ class Store:
         return True
 
     @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        """Add any derived-state columns an older database is missing."""
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    def _infer_previous_local_node(conn: sqlite3.Connection) -> str | None:
+        """Work out which radio produced the pre-scoping rows.
+
+        Only the locally attached node's outgoing messages, localStats and
+        routing acknowledgements reach the client, so any of the three
+        identifies it.
+        """
+        for sql in (
+            "SELECT from_id FROM messages WHERE outgoing=1 AND from_id IS NOT NULL"
+            " GROUP BY from_id ORDER BY COUNT(*) DESC LIMIT 1",
+            "SELECT node_id FROM nodes WHERE local_stats IS NOT NULL"
+            " AND local_stats NOT IN ('', '{}') LIMIT 1",
+            "SELECT from_id FROM packets WHERE portnum='ROUTING_APP' AND from_id IS NOT NULL"
+            " GROUP BY from_id ORDER BY COUNT(*) DESC LIMIT 1",
+        ):
+            try:
+                row = conn.execute(sql).fetchone()
+            except sqlite3.Error:
+                continue
+            if row and row[0]:
+                return str(row[0])
+        return None
+
+    @classmethod
+    def _migrate(cls, conn: sqlite3.Connection) -> None:
+        """Bring an older database up to the current shape, in place."""
+        node_cols = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
         for name, sqltype in NODE_EXTRA_COLUMNS:
-            if name not in existing:
+            if name not in node_cols:
                 conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {sqltype}")
+
+        relay_cols = {row[1] for row in conn.execute("PRAGMA table_info(relays)")}
+        if "local_node" in relay_cols:
+            conn.commit()
+            return  # already scoped
+
+        previous = cls._infer_previous_local_node(conn) or "unknown"
+        log.info("scoping existing observations to %s", previous)
+
+        packet_cols = {row[1] for row in conn.execute("PRAGMA table_info(packets)")}
+        if "local_node" not in packet_cols:
+            conn.execute("ALTER TABLE packets ADD COLUMN local_node TEXT")
+            conn.execute("UPDATE packets SET local_node=?", (previous,))
+            conn.execute("CREATE INDEX IF NOT EXISTS packets_local ON packets(local_node)")
+
+        # SQLite cannot add a column to a primary key, so rebuild each table.
+        for table, keys in SCOPED_TABLES.items():
+            cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if not cols or "local_node" in cols:
+                continue
+            defs = {row[1]: row[2] for row in conn.execute(f"PRAGMA table_info({table})")}
+            body = ", ".join(f"{c} {defs[c]}" for c in cols)
+            pk = ", ".join(("local_node", *keys))
+            conn.execute(f"CREATE TABLE {table}_new (local_node TEXT NOT NULL, {body},"
+                         f" PRIMARY KEY ({pk}))")
+            conn.execute(f"INSERT INTO {table}_new (local_node, {', '.join(cols)})"
+                         f" SELECT ?, {', '.join(cols)} FROM {table}", (previous,))
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+
+        # Move per-observer node columns into node_obs, keeping the originals
+        # in place as a harmless "best known" fallback.
+        have = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+        cols = [c for c in OBSERVED_COLUMNS if c in have]
+        if cols:
+            conn.execute(
+                f"INSERT OR REPLACE INTO node_obs (local_node, node_id, {', '.join(cols)})"
+                f" SELECT ?, node_id, {', '.join(cols)} FROM nodes", (previous,))
+
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (STATE_TS,)).fetchone()
+        if row is not None:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                         (state_ts_key(previous), row[0]))
+        # Seed the last-attached radio so the first run after migrating still
+        # shows the history it just scoped.
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                     (LAST_OBSERVER, json.dumps(previous)))
         conn.commit()
 
     def close(self) -> None:
@@ -265,9 +371,9 @@ class Store:
             raw = "{}"
         self._put(
             "INSERT INTO packets (ts, from_id, to_id, portnum, channel, snr, rssi, hops,"
-            " packet_id, summary, raw) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " packet_id, summary, raw, local_node) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (p.ts, p.from_id, p.to_id, p.portnum, p.channel, p.snr, p.rssi, p.hops,
-             p.packet_id, p.summary, raw),
+             p.packet_id, p.summary, raw, self.local_node),
         )
 
     def add_message(self, m: ChatMessage) -> None:
@@ -310,13 +416,26 @@ class Store:
              n.snr, n.hops, n.packets),
         )
 
+    def save_node_observation(self, n: Node) -> None:
+        """Per-observer view: signal, distance and counts as heard from here."""
+        if n.snr is None and n.hops is None and not n.packets and not n.snr_history:
+            return  # this radio has not actually heard the node
+        self._put(
+            "INSERT INTO node_obs (local_node, node_id, snr, hops, packets, last_heard,"
+            " snr_history) VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(local_node, node_id) DO UPDATE SET snr=excluded.snr,"
+            " hops=excluded.hops, packets=MAX(node_obs.packets, excluded.packets),"
+            " last_heard=MAX(COALESCE(node_obs.last_heard,0), COALESCE(excluded.last_heard,0)),"
+            " snr_history=COALESCE(excluded.snr_history, node_obs.snr_history)",
+            (self.local_node, n.node_id, n.snr, n.hops, n.packets, n.last_heard,
+             json.dumps(list(n.snr_history)) if n.snr_history else None),
+        )
+
     def save_node_derived(self, n: Node) -> None:
         """Persist the state that is folded in from packets rather than sent
         as node records. Only non-empty values are written, so a session that
         has not heard from a node cannot erase what we already know."""
         values: dict[str, Any] = {}
-        if n.snr_history:
-            values["snr_history"] = json.dumps(list(n.snr_history))
         if n.env:
             values["env"] = json.dumps(n.env)
             values["env_ts"] = n.env_ts
@@ -340,30 +459,32 @@ class Store:
     def save_relay(self, byte: int, packets: int, origins: Iterable[str],
                    first_seen: float, last_seen: float, snr_sum: float, snr_n: int) -> None:
         self._put(
-            "INSERT INTO relays (byte, packets, origins, first_seen, last_seen, snr_sum,"
-            " snr_n) VALUES (?,?,?,?,?,?,?)"
-            " ON CONFLICT(byte) DO UPDATE SET packets=excluded.packets,"
+            "INSERT INTO relays (local_node, byte, packets, origins, first_seen, last_seen,"
+            " snr_sum, snr_n) VALUES (?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(local_node, byte) DO UPDATE SET packets=excluded.packets,"
             " origins=excluded.origins,"
             " first_seen=MIN(relays.first_seen, excluded.first_seen),"
             " last_seen=MAX(relays.last_seen, excluded.last_seen),"
             " snr_sum=excluded.snr_sum, snr_n=excluded.snr_n",
-            (byte, packets, json.dumps(sorted(origins)), first_seen, last_seen,
-             snr_sum, snr_n),
+            (self.local_node, byte, packets, json.dumps(sorted(origins)),
+             first_seen, last_seen, snr_sum, snr_n),
         )
 
     def save_relay_edge(self, origin: str, byte: int, packets: int) -> None:
         self._put(
-            "INSERT INTO relay_edges (origin, relay_byte, packets) VALUES (?,?,?)"
-            " ON CONFLICT(origin, relay_byte) DO UPDATE SET packets=excluded.packets",
-            (origin, byte, packets),
+            "INSERT INTO relay_edges (local_node, origin, relay_byte, packets)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(local_node, origin, relay_byte) DO UPDATE"
+            " SET packets=excluded.packets",
+            (self.local_node, origin, byte, packets),
         )
 
     def save_foreign_channel(self, ch: Any) -> None:
         self._put(
-            "INSERT INTO foreign_channels (hash, packets, senders, ports, first_seen,"
-            " last_seen, snr_min, snr_max, hops_min, hops_max, key_label, sample)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(hash) DO UPDATE SET packets=excluded.packets,"
+            "INSERT INTO foreign_channels (local_node, hash, packets, senders, ports,"
+            " first_seen, last_seen, snr_min, snr_max, hops_min, hops_max, key_label,"
+            " sample) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(local_node, hash) DO UPDATE SET packets=excluded.packets,"
             " senders=excluded.senders, ports=excluded.ports,"
             " first_seen=MIN(foreign_channels.first_seen, excluded.first_seen),"
             " last_seen=MAX(foreign_channels.last_seen, excluded.last_seen),"
@@ -371,7 +492,7 @@ class Store:
             " hops_min=excluded.hops_min, hops_max=excluded.hops_max,"
             " key_label=COALESCE(excluded.key_label, foreign_channels.key_label),"
             " sample=COALESCE(excluded.sample, foreign_channels.sample)",
-            (ch.hash, ch.packets, json.dumps(sorted(ch.senders)),
+            (self.local_node, ch.hash, ch.packets, json.dumps(sorted(ch.senders)),
              json.dumps(dict(ch.ports)), ch.first_seen, ch.last_seen,
              ch.snr_min, ch.snr_max, ch.hops_min, ch.hops_max, ch.key_label, ch.sample),
         )
@@ -421,9 +542,9 @@ class Store:
         code path live packets take.
         """
         rows = self._read(
-            "SELECT raw FROM (SELECT rowid_, raw FROM packets ORDER BY rowid_ DESC"
-            " LIMIT ?) ORDER BY rowid_ ASC",
-            (limit,),
+            "SELECT raw FROM (SELECT rowid_, raw FROM packets WHERE local_node IS ?"
+            " ORDER BY rowid_ DESC LIMIT ?) ORDER BY rowid_ ASC",
+            (self.local_node, limit),
         )
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -445,8 +566,6 @@ class Store:
                     "shortName": r["short_name"] or "",
                     "hwModel": r["hw_model"] or "",
                 },
-                "snr": r["snr"],
-                "hopsAway": r["hops"],
                 "lastHeard": r["last_heard"],
             }
             if r["lat"] is not None and r["lon"] is not None:
@@ -459,7 +578,6 @@ class Store:
             record["_packets"] = r["packets"] or 0
             keys = r.keys()
             record["_derived"] = {
-                "snr_history": _json_list(r["snr_history"]) if "snr_history" in keys else [],
                 "env": _json_dict(r["env"]) if "env" in keys else {},
                 "env_ts": r["env_ts"] if "env_ts" in keys else None,
                 "local_stats": _json_dict(r["local_stats"]) if "local_stats" in keys else {},
@@ -473,6 +591,24 @@ class Store:
             }
             out.append(record)
         return out
+
+    def load_node_observations(self) -> dict[str, dict[str, Any]]:
+        """This observer's view of every node it has heard."""
+        out: dict[str, dict[str, Any]] = {}
+        for r in self._read("SELECT * FROM node_obs WHERE local_node IS ?",
+                            (self.local_node,)):
+            out[r["node_id"]] = {
+                "snr": r["snr"], "hops": r["hops"], "packets": r["packets"] or 0,
+                "last_heard": r["last_heard"],
+                "snr_history": _json_list(r["snr_history"]),
+            }
+        return out
+
+    def observers(self) -> list[tuple[str, int]]:
+        """Radios that have contributed observations, busiest first."""
+        return [(r["local_node"] or "unknown", r["n"]) for r in self._read(
+            "SELECT local_node, COUNT(*) n FROM node_obs GROUP BY local_node"
+            " ORDER BY n DESC")]
 
     def get_meta(self, key: str, default: Any = None) -> Any:
         rows = self._read("SELECT value FROM meta WHERE key=?", (key,))
@@ -489,16 +625,19 @@ class Store:
              "origins": _json_list(r["origins"]), "first_seen": r["first_seen"] or 0.0,
              "last_seen": r["last_seen"] or 0.0, "snr_sum": r["snr_sum"] or 0.0,
              "snr_n": r["snr_n"] or 0}
-            for r in self._read("SELECT * FROM relays")
+            for r in self._read("SELECT * FROM relays WHERE local_node IS ?",
+                                (self.local_node,))
         ]
 
     def load_relay_edges(self) -> list[tuple[str, int, int]]:
         return [(r["origin"], r["relay_byte"], r["packets"] or 0)
-                for r in self._read("SELECT * FROM relay_edges")]
+                for r in self._read("SELECT * FROM relay_edges WHERE local_node IS ?",
+                                    (self.local_node,))]
 
     def load_foreign_channels(self) -> list[dict[str, Any]]:
         out = []
-        for r in self._read("SELECT * FROM foreign_channels"):
+        for r in self._read("SELECT * FROM foreign_channels WHERE local_node IS ?",
+                            (self.local_node,)):
             record = dict(r)
             record["senders"] = set(_json_list(r["senders"]))
             record["ports"] = _json_dict(r["ports"])

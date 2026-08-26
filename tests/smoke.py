@@ -317,6 +317,28 @@ async def main() -> int:
               f"{len(st3.foreign_channels)} channels survived")
     store3.close()
 
+    # --- observations must not carry over between radios ---
+    store4 = Store(db, flush_interval=0.3)
+    assert store4.open()
+    app4 = MeshTUI(demo=False, store=store4)
+    async with app4.run_test(size=(160, 48)) as pilot4:
+        await pilot4.pause(1.0)
+        inherited = len([n for n in app4.state.nodes.values() if n.snr_history])
+        app4._handle("connected", {"device": "test", "my_node_id": "!deadbeef",
+                                   "my_node_name": "Other Radio", "firmware": "x",
+                                   "channels": ["LongFast"], "channel_security": []})
+        await pilot4.pause(1.5)
+        after = len([n for n in app4.state.nodes.values() if n.snr_history])
+        if after and inherited:
+            problems.append(f"a different radio inherited {after} sparklines")
+        if app4.state.relays:
+            problems.append("a different radio inherited relay counts")
+        if len(app4.state.nodes) < 7:
+            problems.append("node facts were wrongly discarded on radio change")
+        print(f"radio swap: {inherited} observations before, {after} after "
+              f"(facts kept: {len(app4.state.nodes)} nodes)")
+    store4.close()
+
     if problems:
         print("FAIL: " + "; ".join(problems))
         return 1

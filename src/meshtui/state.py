@@ -369,6 +369,26 @@ class MeshState:
         if last is None or abs(last[0] - lat) > 1e-6 or abs(last[1] - lon) > 1e-6:
             node.track.append((lat, lon, packet.ts))
 
+    def clear_observations(self) -> None:
+        """Drop everything that means "as heard from here".
+
+        Used when the attached radio turns out to be a different node from the
+        one whose view was optimistically restored: signal, hop counts and
+        relay shares are all relative to the receiver, so they cannot carry
+        over. Facts about the nodes themselves are kept.
+        """
+        self.relays.clear()
+        self.relay_edges.clear()
+        self.foreign_channels.clear()
+        self.packets.clear()
+        self.mqtt_packets = 0
+        self.last_packet_ts = 0.0
+        for node in self.nodes.values():
+            node.snr = None
+            node.hops = None
+            node.packets = 0
+            node.snr_history.clear()
+
     def resolve_relay(self, byte: int) -> list[Node]:
         """Nodes whose number ends in this byte. More than one means ambiguity."""
         return [n for n in self.nodes.values() if (n.num & 0xFF) == byte]

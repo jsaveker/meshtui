@@ -16,7 +16,7 @@ from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_byt
 from .radio import (DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes,
                     traceroute_hops)
 from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
-from .store import STATE_TS, Store
+from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.audit import AuditScreen
 from .widgets.chat import ChatPane, LeaveChat
 from .widgets.detail import NodeDetail
@@ -106,10 +106,9 @@ class MeshTUI(App[None]):
         # sensor readings, relay counts - which the nodes table does not hold.
         # It reads and decodes off the UI thread, then connects when done so
         # the feed stays in chronological order.
-        if self.store is not None and self.store.enabled and self.restore_limit > 0:
-            self.run_worker(self._replay_worker, thread=True, name="replay")
-        else:
-            self._start_link()
+        # Observations are scoped to the radio doing the observing, so they can
+        # only be restored once the link tells us which node that is.
+        self._start_link()
 
     def _start_link(self) -> None:
         self.link = DemoLink(self._emit) if self.demo else SerialLink(self._emit, self.port)
@@ -133,7 +132,7 @@ class MeshTUI(App[None]):
         restored = 0
         for record in self.store.known_nodes():
             first_seen = record.pop("_first_seen", None)
-            packets = record.pop("_packets", 0)
+            record.pop("_packets", 0)
             derived = record.pop("_derived", {})
             try:
                 node = self.state.upsert_node(record)
@@ -141,12 +140,18 @@ class MeshTUI(App[None]):
                 continue
             if first_seen:
                 node.first_seen = first_seen
-            node.packets = packets
             self._apply_derived(node, derived)
             restored += 1
-        self._restore_aggregates()
         for message in self.store.recent_messages():
             self.state.add_chat(message)
+
+        # Optimistically load the last-attached radio's view so the dashboard
+        # is useful immediately, and with no radio at all. If a different node
+        # turns out to be plugged in, this is discarded on connect.
+        last = self.store.get_meta(LAST_OBSERVER)
+        if last:
+            self.store.local_node = str(last)
+            self._restore_observations()
         if restored or self.state.chat:
             self.note(
                 f"restored {restored} nodes, {len(self.state.chat)} messages from history",
@@ -181,6 +186,10 @@ class MeshTUI(App[None]):
             folded += fold
             self.state.add_packet(packet, historical=True, fold=fold)
         if packets:
+            # Live packets may have arrived while the replay was decoding.
+            ordered = sorted(self.state.packets, key=lambda p: p.ts)
+            self.state.packets.clear()
+            self.state.packets.extend(ordered)
             feed = self.query_one(PacketFeed)
             feed.rerender(self.state, limit=FEED_RESTORE_ROWS)
             feed.write_notice(
@@ -192,7 +201,6 @@ class MeshTUI(App[None]):
                 f"replayed {len(packets)} packets covering "
                 f"{fmt_duration(span)} of history ({detail})", "grey70")
         self._tick()
-        self._start_link()
 
     @staticmethod
     def _apply_derived(node, derived: dict) -> None:
@@ -223,6 +231,62 @@ class MeshTUI(App[None]):
         if derived.get("location_source"):
             node.location_source = derived["location_source"]
 
+    def _restore_for_observer(self) -> None:
+        """Reconcile the restored view with the radio that actually connected.
+
+        Signal, hop count and relay share all mean "as heard from here", so if
+        this is a different node from last time its predecessor's view is
+        dropped rather than blended into.
+        """
+        store = self.store
+        if store is None or not store.enabled:
+            return
+        previous = store.local_node
+        store.local_node = self.state.my_node_id
+        if previous and previous != store.local_node:
+            self.state.clear_observations()
+            self.query_one(PacketFeed).clear_feed()
+            self.note(f"different radio than last run "
+                      f"({self.state.node_name(previous)} -> "
+                      f"{self.state.node_name(store.local_node or '')}); "
+                      f"observations start fresh", "yellow")
+        elif previous == store.local_node:
+            # Already restored optimistically at startup.
+            store.set_meta(LAST_OBSERVER, store.local_node)
+            if self.restore_limit > 0:
+                self.run_worker(self._replay_worker, thread=True, name="replay")
+            return
+        self._restore_observations()
+        store.set_meta(LAST_OBSERVER, store.local_node)
+        if self.restore_limit > 0:
+            self.run_worker(self._replay_worker, thread=True, name="replay")
+
+    def _restore_observations(self) -> None:
+        """Load this observer's node view and mesh aggregates."""
+        store = self.store
+        if store is None or not store.enabled:
+            return
+        seen = 0
+        for node_id, obs in store.load_node_observations().items():
+            node = self.state.nodes.get(node_id)
+            if node is None:
+                continue
+            node.snr = obs["snr"]
+            node.hops = obs["hops"]
+            node.packets = obs["packets"] or 0
+            if obs["last_heard"]:
+                node.last_heard = max(node.last_heard or 0.0, obs["last_heard"])
+            for value in obs["snr_history"]:
+                try:
+                    node.snr_history.append(float(value))
+                except (TypeError, ValueError):
+                    pass
+            seen += 1
+        self._restore_aggregates()
+        if seen:
+            self.note(f"restored {seen} observations for "
+                      f"{self.state.node_name(store.local_node or '')}", "grey70")
+
     def _restore_aggregates(self) -> None:
         """Reload relay and channel counters saved as a snapshot."""
         store = self.store
@@ -248,7 +312,8 @@ class MeshTUI(App[None]):
             )
             channel.ports.update(row["ports"])
             self.state.foreign_channels[row["hash"]] = channel
-        self.state.last_packet_ts = float(store.get_meta(STATE_TS, 0.0) or 0.0)
+        self.state.last_packet_ts = float(
+            store.get_meta(state_ts_key(store.local_node), 0.0) or 0.0)
 
     def _persist_nodes(self) -> None:
         """Write the whole derived snapshot: node rows, the state folded in
@@ -256,9 +321,15 @@ class MeshTUI(App[None]):
         store = self.store
         if store is None or not store.enabled:
             return
+        if store.local_node is None:
+            # Before the radio identifies itself we cannot attribute
+            # observations, and writing them unattributed would pollute the
+            # scoped tables.
+            return
         for node in self.state.nodes.values():
             store.save_node(node)
             store.save_node_derived(node)
+            store.save_node_observation(node)
         for relay in self.state.relays.values():
             store.save_relay(relay.byte, relay.packets, relay.origins,
                              relay.first_seen, relay.last_seen,
@@ -267,7 +338,8 @@ class MeshTUI(App[None]):
             store.save_relay_edge(origin, byte, count)
         for channel in self.state.foreign_channels.values():
             store.save_foreign_channel(channel)
-        store.set_meta(STATE_TS, self.state.last_packet_ts)
+        store.set_meta(state_ts_key(store.local_node), self.state.last_packet_ts)
+        store.set_meta(LAST_OBSERVER, store.local_node)
 
     # ------------------------------------------------- radio -> UI bridge
 
@@ -414,6 +486,7 @@ class MeshTUI(App[None]):
             )
         if self.state.my_node_id and self.state.my_node_id in self.state.nodes:
             self.state.nodes[self.state.my_node_id].is_self = True
+        self._restore_for_observer()
         self.run_worker(
             self.query_one(ChatPane).set_channels(self.state.channels),
             name="chat-tabs",
