@@ -110,12 +110,14 @@ class PacketFeed(DataTable):
             return
         self._write_line(packet, state)
 
-    def rerender(self, state: MeshState) -> None:
+    def rerender(self, state: MeshState, limit: int | None = None) -> None:
         self.clear()
         self._rows = []
-        for pkt in state.packets:
-            if self._passes(pkt):
-                self._write_line(pkt, state)
+        packets = [p for p in state.packets if self._passes(p)]
+        if limit is not None and len(packets) > limit:
+            packets = packets[-limit:]
+        for pkt in packets:
+            self._write_line(pkt, state)
 
     def clear_feed(self) -> None:
         self.clear()

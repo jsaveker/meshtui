@@ -13,7 +13,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
-from .radio import DemoLink, RadioLink, SerialLink, max_payload_bytes
+from .radio import DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes
 from .state import LocalChannel, MeshState
 from .store import Store
 from .widgets.audit import AuditScreen
@@ -26,7 +26,9 @@ from .widgets.nodes import NodeTable
 from .widgets.relays import RelayScreen
 from .widgets.sensors import SensorScreen
 from .widgets.packets import PacketFeed
-from .widgets.stats import StatsPane
+from .widgets.stats import StatsPane, fmt_duration
+
+FEED_RESTORE_ROWS = 400
 
 HELP = """
 /dm <node> <text>   send a direct message (node = short name or !id)
@@ -60,12 +62,13 @@ class MeshTUI(App[None]):
     ]
 
     def __init__(self, port: str | None = None, demo: bool = False,
-                 store: Store | None = None) -> None:
+                 store: Store | None = None, restore_limit: int = 3000) -> None:
         super().__init__()
         self.state = MeshState()
         self.port = port
         self.demo = demo
         self.store = store
+        self.restore_limit = restore_limit
         self.link: RadioLink | None = None
         self._status_note: tuple[str, str] = ("starting...", "grey70")
         self._note_until: float = 0.0
@@ -97,6 +100,17 @@ class MeshTUI(App[None]):
         # Node rows change with nearly every packet; persist them on a slow
         # cadence rather than writing a row per packet.
         self.set_interval(60.0, self._persist_nodes)
+
+        # Replaying stored packets rebuilds everything derived - SNR history,
+        # sensor readings, relay counts - which the nodes table does not hold.
+        # It reads and decodes off the UI thread, then connects when done so
+        # the feed stays in chronological order.
+        if self.store is not None and self.store.enabled and self.restore_limit > 0:
+            self.run_worker(self._replay_worker, thread=True, name="replay")
+        else:
+            self._start_link()
+
+    def _start_link(self) -> None:
         self.link = DemoLink(self._emit) if self.demo else SerialLink(self._emit, self.port)
         # Connecting blocks (serial handshake + config download), so keep it
         # off the UI thread.
@@ -134,6 +148,39 @@ class MeshTUI(App[None]):
                 f"restored {restored} nodes, {len(self.state.chat)} messages from history",
                 "grey70",
             )
+
+    def _replay_worker(self) -> None:
+        """Read and decode stored packets off the UI thread."""
+        packets = []
+        try:
+            for raw in self.store.recent_packets(self.restore_limit):  # type: ignore[union-attr]
+                try:
+                    packets.append(flatten(raw))
+                except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.note, f"could not replay history: {exc}", "red")
+        try:
+            self.call_from_thread(self._apply_replay, packets)
+        except RuntimeError:
+            pass
+
+    def _apply_replay(self, packets: list[Packet]) -> None:
+        """Fold replayed packets into state on the UI thread, then connect."""
+        for packet in packets:
+            self.state.add_packet(packet, historical=True)
+        if packets:
+            feed = self.query_one(PacketFeed)
+            feed.rerender(self.state, limit=FEED_RESTORE_ROWS)
+            feed.write_notice(
+                f"---- {len(packets)} packets replayed from history; "
+                f"live traffic follows ----", "bold grey54")
+            span = packets[-1].ts - packets[0].ts
+            self.note(
+                f"replayed {len(packets)} packets covering "
+                f"{fmt_duration(span)} of history", "grey70")
+        self._tick()
+        self._start_link()
 
     def _persist_nodes(self) -> None:
         if self.store is None or not self.store.enabled:

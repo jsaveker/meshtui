@@ -345,9 +345,20 @@ strong".
 ## History and privacy
 
 Everything is logged to SQLite at `~/.local/share/meshtui/mesh.db` (override with
-`--db`, disable entirely with `--no-store`). Nodes and recent chat are restored on
-startup, so the dashboard is useful before the first packet arrives. Writes go
-through a background thread, so disk I/O never blocks the UI.
+`--db`, disable entirely with `--no-store`). Writes go through a background thread,
+so disk I/O never blocks the UI.
+
+On startup meshtui restores nodes and chat from their own tables, then **replays the
+last 3000 stored packets** through the same code path live traffic takes. That
+replay is what rebuilds everything *derived*: SNR sparklines, sensor readings,
+relay counts, foreign channels and movement trails. None of those are stored per
+node, so without the replay they would start empty after every restart even though
+the packets were safely on disk.
+
+The replay reads and decodes on a worker thread and takes well under a second for a
+few thousand packets. Replayed packets are marked historical: they rebuild state but
+do not inflate this session's packet counter or per-node totals. Tune with
+`--restore-limit N`, or `--restore-limit 0` to skip it.
 
 ```sh
 meshtui --stats

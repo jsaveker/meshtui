@@ -262,12 +262,31 @@ async def main() -> int:
     assert store2.open()
     app2 = MeshTUI(demo=True, store=store2)
     async with app2.run_test(size=(160, 48)) as pilot2:
-        await pilot2.pause(0.5)
-        if len(app2.state.nodes) < 7:
+        # Wait for the background replay to finish rebuilding derived state.
+        for _ in range(40):
+            await pilot2.pause(0.25)
+            if any(n.snr_history for n in app2.state.nodes.values()):
+                break
+        st2 = app2.state
+        if len(st2.nodes) < 7:
             problems.append("nodes not restored from db")
-        if not app2.state.chat:
+        if not st2.chat:
             problems.append("chat not restored from db")
-        print(f"restored: {len(app2.state.nodes)} nodes, {len(app2.state.chat)} messages")
+        # Derived state is not stored per node; it must be rebuilt by replaying
+        # packets. This is what silently broke after a restart.
+        sparked = [n for n in st2.nodes.values() if n.snr_history]
+        if not sparked:
+            problems.append("SNR sparklines not rebuilt from stored packets")
+        if not st2.packets:
+            problems.append("packet history not replayed into the feed")
+        if st2.stats.total and st2.stats.total >= len(st2.packets):
+            problems.append("replayed packets wrongly counted in session stats")
+        replayed_node = next((n for n in sparked), None)
+        if replayed_node and replayed_node.packets < 0:
+            problems.append("replay corrupted per-node packet counts")
+        print(f"restored: {len(st2.nodes)} nodes, {len(st2.chat)} messages, "
+              f"{len(sparked)} sparklines, {len(st2.packets)} packets replayed, "
+              f"session stats.total={st2.stats.total}")
     store2.close()
 
     if problems:

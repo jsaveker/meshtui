@@ -234,9 +234,17 @@ class MeshState:
 
     # -------------------------------------------------------------- packets
 
-    def add_packet(self, packet: Packet) -> None:
+    def add_packet(self, packet: Packet, historical: bool = False) -> None:
+        """Fold a packet into every derived view.
+
+        `historical` marks a packet replayed from the database on startup: it
+        rebuilds node and mesh state exactly as a live packet would, but must
+        not inflate this session's counters or re-count per-node totals that
+        were already restored from the nodes table.
+        """
         self.packets.append(packet)
-        self.stats.record(packet)
+        if not historical:
+            self.stats.record(packet)
         if packet.via_mqtt:
             self.mqtt_packets += 1
         self._record_relay(packet)
@@ -255,8 +263,12 @@ class MeshState:
                 channel.sample = packet.summary[:60]
         node = self.nodes.get(packet.from_id)
         if node is not None:
-            node.packets += 1
-            node.last_heard = packet.ts
+            if not historical:
+                # Replayed packets must not double-count: the nodes table
+                # already carries the lifetime total.
+                node.packets += 1
+            # Never let a replayed or out-of-order packet drag this backwards.
+            node.last_heard = max(node.last_heard or 0.0, packet.ts)
             if packet.snr is not None:
                 node.snr = packet.snr
                 # History comes from live packets only; NodeDB snapshots would

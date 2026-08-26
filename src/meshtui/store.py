@@ -254,6 +254,26 @@ class Store:
             for r in rows
         ]
 
+    def recent_packets(self, limit: int = 3000) -> list[dict[str, Any]]:
+        """The most recent raw packets, oldest first, for rebuilding state.
+
+        Derived state - SNR history, sensor readings, relay counts - is not
+        stored per node; it is rebuilt by replaying these through the same
+        code path live packets take.
+        """
+        rows = self._read(
+            "SELECT raw FROM (SELECT rowid_, raw FROM packets ORDER BY rowid_ DESC"
+            " LIMIT ?) ORDER BY rowid_ ASC",
+            (limit,),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                out.append(json.loads(row["raw"]))
+            except Exception:  # noqa: BLE001 - skip anything unparseable
+                continue
+        return out
+
     def known_nodes(self) -> list[dict[str, Any]]:
         """Node records shaped like meshtastic NodeDB entries, for upsert_node."""
         out: list[dict[str, Any]] = []

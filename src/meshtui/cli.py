@@ -103,6 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true", help="write debug log to meshtui.log")
     parser.add_argument("--db", help=f"database path (default: {default_db_path()})")
     parser.add_argument("--no-store", action="store_true", help="do not persist to disk")
+    parser.add_argument(
+        "--restore-limit", type=int, default=3000, metavar="N",
+        help="replay the last N stored packets on startup to rebuild sparklines, "
+             "sensor readings and relay stats (0 disables; default 3000)",
+    )
     parser.add_argument("--stats", action="store_true", help="print database stats and exit")
     parser.add_argument(
         "--export", metavar="TABLE:FILE",
@@ -175,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     from .app import MeshTUI
 
     try:
-        MeshTUI(port=args.port, demo=args.demo, store=store).run()
+        MeshTUI(port=args.port, demo=args.demo, store=store,
+                restore_limit=max(0, args.restore_limit)).run()
     finally:
         if store is not None:
             store.close()
