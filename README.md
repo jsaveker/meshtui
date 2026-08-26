@@ -213,11 +213,39 @@ pane title reads `typing, esc to leave`. Half-composed text is kept when you esc
 
 ```
 /dm <node> <text>   direct message (node = short name or !id)
-/trace <node>       request a traceroute
+/trace <node> [hops]  traceroute; pass 1 to test only the direct link
 /nodes              list known nodes
 /clear              clear the conversation view
 /help               show help
 ```
+
+## Traceroute
+
+`/trace <node>` asks a node to report the path back to you, with per-hop signal in
+both directions:
+
+```
+  traceroute to STLH: 1 hop
+    out   Prom  (you)
+              +6.2dB  -> SNTL
+                   ?  -> STLH
+    back  STLH
+              +4.0dB  -> Prom
+```
+
+The hop count matters when you are testing a specific link. With the default limit
+the mesh may route around a weak path and still succeed, which looks like the link
+is fine. **`/trace <node> 1` allows no relays**, so it succeeds only if the two
+radios really can hear each other.
+
+SNR is carried in quarter-dB with `-128` meaning "not measured", and the list has
+one entry more than the route because the final endpoint reports what it received.
+
+meshtui does not use the library's `sendTraceRoute()` helper: that calls
+`waitForTraceRoute()`, blocking for tens of seconds, and its response handler
+prints to stdout - both fatal in a TUI. The request is sent without waiting and the
+reply is rendered from the ordinary `TRACEROUTE_APP` packet that comes back, so the
+interface stays live. Replies can take 30 seconds or more.
 
 ## Message length
 

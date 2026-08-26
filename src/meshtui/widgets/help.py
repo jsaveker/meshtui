@@ -51,7 +51,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("chat commands", [
         ("/dm <node> <text>", "direct message (short name or !id)"),
-        ("/trace <node>", "request a traceroute"),
+        ("/trace <node> [hops]", "traceroute; hops=1 tests only the direct link"),
         ("/nodes", "list known nodes"),
         ("/clear", "clear the conversation view"),
         ("/help", "command help"),

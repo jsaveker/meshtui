@@ -13,7 +13,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
-from .radio import DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes
+from .radio import (DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes,
+                    traceroute_hops)
 from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
 from .store import STATE_TS, Store
 from .widgets.audit import AuditScreen
@@ -322,6 +323,46 @@ class MeshTUI(App[None]):
         for i, line in enumerate(textwrap.wrap(message, width)):
             feed.write_notice(("! " if i == 0 else "  ") + line, "bold red")
 
+    def _show_traceroute(self, packet: Packet) -> None:
+        """Write a readable route, with per-hop signal in both directions."""
+        towards, back = traceroute_hops(packet.raw)
+        if not towards:
+            return
+        chat = self.query_one(ChatPane)
+
+        def name(num: int) -> str:
+            return self.state.node_name(f"!{num:08x}")
+
+        me = self.state.my_node_id or "!me"
+        chat.notice("")
+        hops = len(towards) - 1
+        chat.notice(f"  traceroute to {name(packet.raw.get('from', 0))}: "
+                    f"{'DIRECT, no relay' if hops == 0 else f'{hops} hop(s)'}",
+                    "bold bright_cyan")
+
+        def render(label: str, chain: list, start: str) -> None:
+            # One hop per line: a single-line route truncates badly in a narrow
+            # chat pane, and the per-hop SNR is the point of the exercise.
+            chat.notice(f"    {label:<5} {start}", "grey62")
+            for num, snr in chain:
+                signal = f"{snr:+.1f}dB" if snr is not None else "     ?"
+                if snr is None:
+                    style = "grey42"
+                elif snr >= 0:
+                    style = "bright_green"
+                elif snr >= -8:
+                    style = "yellow"
+                else:
+                    style = "red"
+                chat.notice(f"          {signal:>8}  -> {name(num)}", style)
+
+        render("out", towards, self.state.node_name(me) + "  (you)")
+        if back:
+            render("back", back, name(packet.raw.get("from", 0)))
+        else:
+            chat.notice("    (no return path reported)", "grey54")
+        chat.notice("")
+
     def _on_packet(self, packet: Packet) -> None:
         # Make sure every sender exists in the node table, even before its
         # NODEINFO arrives, so counts and names line up.
@@ -334,6 +375,8 @@ class MeshTUI(App[None]):
         if self.store is not None:
             self.store.add_packet(packet)
         self.query_one(PacketFeed).add(packet, self.state)
+        if packet.portnum == "TRACEROUTE_APP":
+            self._show_traceroute(packet)
 
     def _on_chat(self, message: ChatMessage) -> None:
         message.from_name = self.state.node_name(message.from_id)
@@ -482,10 +525,29 @@ class MeshTUI(App[None]):
 
     def action_trace_selected(self) -> None:
         node = self._selected_node()
-        if node is None or self.link is None:
+        if node is None:
             self.note("select a node first", "yellow")
             return
-        self.link.request_traceroute(node.node_id)
+        self._trace(node.node_id, 5)
+
+    def _trace(self, node_id: str, hop_limit: int) -> None:
+        """Send a traceroute on a worker thread.
+
+        The serial write plus the library's internal bookkeeping can take a
+        noticeable moment, and doing it inline freezes the whole interface.
+        """
+        link = self.link
+        if link is None or not self.state.connected:
+            self.note("not connected", "red")
+            return
+        self.query_one(ChatPane).notice(
+            f"  traceroute to {self.state.node_name(node_id)} sent"
+            f"{' (direct link only)' if hop_limit <= 1 else f' (up to {hop_limit} hops)'}"
+            f" - the reply can take 30s or more", "grey62")
+        self.run_worker(
+            lambda: link.request_traceroute(node_id, hop_limit),
+            thread=True, name="traceroute",
+        )
 
     def _selected_node(self):
         node_id = self.query_one(NodeTable).selected_node_id()
@@ -573,14 +635,22 @@ class MeshTUI(App[None]):
             self.run_worker(chat.focus_dm(node.node_id, node.label), name="dm-tab")
             self._send(parts[2], node.node_id, 0)
         elif cmd == "/trace":
-            if len(parts) < 2 or self.link is None:
-                chat.notice("  usage: /trace <node>", "yellow")
+            if len(parts) < 2:
+                chat.notice("  usage: /trace <node> [maxhops]   "
+                            "(use 1 to test only the direct link)", "yellow")
                 return
             node = self.state.resolve(parts[1])
             if node is None:
                 chat.notice(f"  unknown node: {parts[1]}", "yellow")
                 return
-            self.link.request_traceroute(node.node_id)
+            hop_limit = 5
+            if len(parts) >= 3:
+                try:
+                    hop_limit = max(1, min(7, int(parts[2].split()[0])))
+                except ValueError:
+                    chat.notice("  maxhops must be a number 1-7", "yellow")
+                    return
+            self._trace(node.node_id, hop_limit)
         else:
             chat.notice(f"  unknown command {cmd} - try /help", "yellow")
 

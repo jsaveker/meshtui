@@ -261,6 +261,62 @@ def _try_published_decrypt(raw: dict[str, Any]) -> tuple[dict[str, Any], str] | 
     return decoded, got.key_label
 
 
+UNKNOWN_SNR = -128        # RouteDiscovery sentinel for "no measurement"
+SNR_SCALE = 4.0           # SNR fields are carried in quarter-dB
+
+
+def _snr_at(values: list[Any], index: int) -> float | None:
+    if index >= len(values):
+        return None
+    value = values[index]
+    if value is None or value == UNKNOWN_SNR:
+        return None
+    return value / SNR_SCALE
+
+
+def traceroute_hops(raw: dict[str, Any], decoded: dict[str, Any] | None = None
+                    ) -> tuple[list[tuple[int, float | None]], list[tuple[int, float | None]]]:
+    """Split a traceroute reply into (towards, back) lists of (node_num, snr).
+
+    The reply travels from the traced node, so `to` is us and `from` is the
+    node we asked about. Each SNR list carries one more entry than its route:
+    the final endpoint reports the signal it received.
+    """
+    decoded = decoded if decoded is not None else (raw.get("decoded") or {})
+    disc = decoded.get("traceroute") or {}
+    route = list(disc.get("route") or [])
+    snr_towards = list(disc.get("snrTowards") or [])
+    route_back = list(disc.get("routeBack") or [])
+    snr_back = list(disc.get("snrBack") or [])
+
+    towards: list[tuple[int, float | None]] = []
+    for i, num in enumerate(route):
+        towards.append((num, _snr_at(snr_towards, i)))
+    if raw.get("from") is not None:
+        towards.append((raw["from"], _snr_at(snr_towards, len(route))))
+
+    back: list[tuple[int, float | None]] = []
+    if route_back or snr_back:
+        for i, num in enumerate(route_back):
+            back.append((num, _snr_at(snr_back, i)))
+        if raw.get("to") is not None:
+            back.append((raw["to"], _snr_at(snr_back, len(route_back))))
+    return towards, back
+
+
+def _fmt_traceroute(raw: dict[str, Any], decoded: dict[str, Any]) -> str:
+    towards, back = traceroute_hops(raw, decoded)
+    if not towards:
+        return "traceroute (no route)"
+    hops = len(towards) - 1
+    parts = []
+    for num, snr in towards:
+        tag = f"!{num:08x}"
+        parts.append(f"{tag}({snr:+.1f})" if snr is not None else tag)
+    label = "direct" if hops == 0 else f"{hops} hop{'s' if hops != 1 else ''}"
+    return f"{label}: " + " -> ".join(parts) + ("  +return" if back else "")
+
+
 def flatten(raw: dict[str, Any]) -> Packet:
     """Turn a meshtastic packet dict into a display-ready Packet."""
     decoded = raw.get("decoded") or {}
@@ -289,8 +345,7 @@ def flatten(raw: dict[str, Any]) -> Packet:
         reason = routing.get("errorReason", "ACK")
         summary = f"reply to #{decoded.get('requestId', '?')}: {reason}"
     elif portnum == "TRACEROUTE_APP":
-        route = (decoded.get("traceroute") or {}).get("route") or []
-        summary = " -> ".join(f"!{h:08x}" for h in route) or "traceroute"
+        summary = _fmt_traceroute(raw, decoded)
     elif portnum == "ENCRYPTED":
         summary = f"encrypted, {len(raw.get('encrypted') or b'')}B"
     else:
@@ -359,7 +414,7 @@ class RadioLink:
         some transports do not report one - so success is reported separately."""
         raise NotImplementedError
 
-    def request_traceroute(self, dest: str) -> None:
+    def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         self.emit("error", "traceroute not supported by this link")
 
 
@@ -565,13 +620,30 @@ class SerialLink(RadioLink):
             self.emit("error", f"send failed: {exc}")
             return (False, None)
 
-    def request_traceroute(self, dest: str) -> None:
+    def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
+        """Send a traceroute without waiting for the reply.
+
+        meshtastic's own sendTraceRoute() calls waitForTraceRoute(), which
+        blocks for tens of seconds, and its response handler prints to stdout -
+        both fatal in a TUI. The reply comes back as an ordinary
+        TRACEROUTE_APP packet, so it is enough to send the request and let the
+        normal receive path render it.
+        """
         if self.iface is None:
             self.emit("error", "not connected")
             return
         try:
-            self.iface.sendTraceRoute(dest, hopLimit=5)
-            self.emit("status", f"traceroute sent to {dest}")
+            from meshtastic.protobuf import mesh_pb2, portnums_pb2
+
+            self.iface.sendData(
+                mesh_pb2.RouteDiscovery(),
+                destinationId=dest,
+                portNum=portnums_pb2.PortNum.TRACEROUTE_APP,
+                wantResponse=True,
+                hopLimit=hop_limit,
+            )
+            hops = "direct only" if hop_limit <= 1 else f"up to {hop_limit} hops"
+            self.emit("status", f"traceroute sent to {dest} ({hops}); reply may take ~30s")
         except Exception as exc:  # noqa: BLE001
             self.emit("error", f"traceroute failed: {exc}")
 
@@ -775,7 +847,7 @@ class DemoLink(RadioLink):
         self._timers = [t for t in self._timers if t.is_alive()] + [timer]
         return (True, pid)
 
-    def request_traceroute(self, dest: str) -> None:
+    def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         node = self._nodes[0]
         route = [n["num"] for n in self._rng.sample(self._nodes[1:], 2)]
         self._emit_raw(node, "TRACEROUTE_APP", {"traceroute": {"route": route}})
