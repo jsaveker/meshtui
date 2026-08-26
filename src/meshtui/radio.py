@@ -59,6 +59,48 @@ def find_serial_ports() -> list[str]:
 
 SERIAL_GROUPS = ("uucp", "dialout", "plugdev")
 
+
+def find_wifi_nodes(timeout: float = 3.0) -> list[tuple[str, str, str]]:
+    """Discover nodes advertising the Meshtastic TCP service over mDNS.
+
+    The firmware registers `_meshtastic._tcp` with the node's short name and
+    id in TXT records, so a radio on WiFi announces itself. Uses avahi-browse
+    when present rather than taking on a zeroconf dependency; returns
+    (host, address, label) tuples.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("avahi-browse"):
+        return []
+    try:
+        out = subprocess.run(
+            ["avahi-browse", "-rptk", "_meshtastic._tcp"],
+            capture_output=True, text=True, timeout=timeout,
+        ).stdout
+    except Exception:  # noqa: BLE001 - discovery is best effort
+        log.debug("avahi-browse failed", exc_info=True)
+        return []
+
+    found: dict[str, tuple[str, str, str]] = {}
+    for line in out.splitlines():
+        # =;iface;proto;name;type;domain;hostname;address;port;txt...
+        parts = line.split(";")
+        if not parts or parts[0] != "=" or len(parts) < 9:
+            continue
+        hostname, address, port = parts[6], parts[7], parts[8]
+        txt = " ".join(parts[9:])
+        label = parts[3] or hostname
+        for key in ("shortname", "id"):
+            marker = f"{key}="
+            if marker in txt:
+                value = txt.split(marker, 1)[1].split('"')[0].strip()
+                if value:
+                    label = f"{label} ({value})" if key == "id" else value
+        found[address] = (hostname.rstrip("."), address,
+                          f"{label}  port {port}")
+    return list(found.values())
+
 _MAX_PAYLOAD: int | None = None
 
 
@@ -418,35 +460,33 @@ class RadioLink:
         self.emit("error", "traceroute not supported by this link")
 
 
-class SerialLink(RadioLink):
-    """Talks to a real node over USB serial via the meshtastic library."""
+class MeshtasticLink(RadioLink):
+    """Shared behaviour for any link the meshtastic library can drive.
 
-    def __init__(self, emit: Emit, port: str | None = None) -> None:
+    Serial and TCP differ only in how the connection is opened: everything
+    above that - the pubsub wiring, packet handling, sending - is identical,
+    because both interfaces derive from the library's MeshInterface.
+    """
+
+    def __init__(self, emit: Emit) -> None:
         super().__init__(emit)
-        self.port = port
         self.iface: Any = None
         self._pub: Any = None
 
+    # Subclasses implement these two.
+    def _describe(self) -> str:
+        raise NotImplementedError
+
+    def _open(self) -> Any:
+        raise NotImplementedError
+
+    def _explain(self, exc: Exception) -> str:
+        return f"could not connect to {self._describe()}: {exc}"
+
     def start(self) -> None:
-        import meshtastic.serial_interface  # noqa: F401  (import cost is real)
         from pubsub import pub
 
         self._pub = pub
-        port = self.port
-        if port is None:
-            candidates = find_serial_ports()
-            if not candidates:
-                self.emit(
-                    "error",
-                    "No serial ports found. Plug in a node, or check that you are "
-                    "in the 'uucp' group (see README).",
-                )
-                return
-            port = candidates[0]
-            if len(candidates) > 1:
-                self.emit("status", f"{len(candidates)} ports found, using {port}")
-        self.port = port
-
         # pubsub keeps only weak references to listeners, so these must stay
         # bound to `self` and `self` must outlive the connection.
         pub.subscribe(self._on_receive, "meshtastic.receive")
@@ -454,27 +494,17 @@ class SerialLink(RadioLink):
         pub.subscribe(self._on_lost, "meshtastic.connection.lost")
         pub.subscribe(self._on_node_updated, "meshtastic.node.updated")
 
-        # Check access up front so the common failure gets a useful message
-        # rather than a wrapped errno from deep inside pyserial.
-        if os.path.exists(port) and not os.access(port, os.R_OK | os.W_OK):
-            self.emit("error", permission_hint(port))
-            return
-
-        self.emit("status", f"opening {port} ...")
         try:
-            self.iface = meshtastic.serial_interface.SerialInterface(devPath=port)
+            target = self._describe()
+        except Exception as exc:  # noqa: BLE001 - nothing to connect to
+            self.emit("error", str(exc))
+            return
+        self.emit("status", f"opening {target} ...")
+        try:
+            self.iface = self._open()
         except Exception as exc:  # noqa: BLE001 - surface anything to the UI
-            if is_permission_error(exc):
-                self.emit("error", permission_hint(port))
-            elif is_busy_error(exc):
-                self.emit(
-                    "error",
-                    f"{port} is already in use - another meshtui, the meshtastic CLI, "
-                    f"or a serial monitor still has it open. Only one process can talk "
-                    f"to the radio at a time.",
-                )
-            else:
-                self.emit("error", f"could not open {port}: {exc}")
+            self.emit("error", self._explain(exc))
+
 
     def stop(self) -> None:
         if self._pub is not None:
@@ -647,6 +677,103 @@ class SerialLink(RadioLink):
         except Exception as exc:  # noqa: BLE001
             self.emit("error", f"traceroute failed: {exc}")
 
+
+class SerialLink(MeshtasticLink):
+    """Talks to a node over USB serial."""
+
+    def __init__(self, emit: Emit, port: str | None = None) -> None:
+        super().__init__(emit)
+        self.port = port
+
+    def _describe(self) -> str:
+        if self.port is None:
+            candidates = find_serial_ports()
+            if not candidates:
+                raise RuntimeError(
+                    "No serial ports found. Plug in a node, or check that you are "
+                    "in the 'uucp' group (see README)."
+                )
+            self.port = candidates[0]
+            if len(candidates) > 1:
+                self.emit("status", f"{len(candidates)} ports found, using {self.port}")
+        return self.port
+
+    def _open(self) -> Any:
+        import meshtastic.serial_interface
+
+        port = self.port or ""
+        # Check access up front so the common failure gets a useful message
+        # rather than a wrapped errno from deep inside pyserial.
+        if os.path.exists(port) and not os.access(port, os.R_OK | os.W_OK):
+            raise PermissionError(port)
+        return meshtastic.serial_interface.SerialInterface(devPath=port)
+
+    def _explain(self, exc: Exception) -> str:
+        port = self.port or "the serial port"
+        if is_permission_error(exc):
+            return permission_hint(port)
+        if is_busy_error(exc):
+            return (f"{port} is already in use - another meshtui, the meshtastic CLI, "
+                    f"or a serial monitor still has it open. Only one process can talk "
+                    f"to the radio at a time.")
+        return f"could not open {port}: {exc}"
+
+
+class TCPLink(MeshtasticLink):
+    """Talks to a node over WiFi, using the same API the serial link uses.
+
+    Meshtastic's TCP server speaks the identical protobuf stream, and the
+    library's TCPInterface shares MeshInterface with SerialInterface, so
+    everything above this class is unchanged.
+    """
+
+    DEFAULT_PORT = 4403
+
+    def __init__(self, emit: Emit, host: str, port: int | None = None) -> None:
+        super().__init__(emit)
+        # Accept "host", "host:port" and bare IPv6 in brackets.
+        self.host, self.port = self._split(host, port or self.DEFAULT_PORT)
+
+    @staticmethod
+    def _split(host: str, default_port: int) -> tuple[str, int]:
+        host = host.strip()
+        if host.startswith("[") and "]" in host:            # [::1]:4403
+            addr, _, rest = host[1:].partition("]")
+            if rest.startswith(":") and rest[1:].isdigit():
+                return addr, int(rest[1:])
+            return addr, default_port
+        if host.count(":") == 1:
+            addr, _, port = host.partition(":")
+            if port.isdigit():
+                return addr, int(port)
+        return host, default_port
+
+    def _describe(self) -> str:
+        return f"{self.host}:{self.port}"
+
+    def _open(self) -> Any:
+        import meshtastic.tcp_interface
+
+        return meshtastic.tcp_interface.TCPInterface(
+            hostname=self.host, portNumber=self.port
+        )
+
+    def _explain(self, exc: Exception) -> str:
+        import socket
+
+        target = self._describe()
+        if isinstance(exc, socket.gaierror):
+            return (f"cannot resolve {self.host}. If you are using a .local name, "
+                    f"mDNS must be working; otherwise use the radio's IP address.")
+        if isinstance(exc, (ConnectionRefusedError,)):
+            return (f"{target} refused the connection. The radio is reachable but its "
+                    f"TCP server is not running - check that WiFi is enabled on it.")
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return (f"{target} did not respond. Check the radio is powered, on the "
+                    f"same network, and that the address is right.")
+        if isinstance(exc, OSError) and exc.errno == errno.EHOSTUNREACH:
+            return f"{target} is unreachable from this machine."
+        return f"could not connect to {target}: {exc}"
 
 class DemoLink(RadioLink):
     """Synthetic mesh so the UI can be developed and demoed without hardware."""

@@ -129,6 +129,8 @@ meshtui --demo
 ```sh
 meshtui                      # autodetect a USB node
 meshtui -p /dev/ttyUSB0      # explicit port
+meshtui -H 192.168.1.42      # connect over WiFi instead of USB
+meshtui -H meshtastic.local  # ... or by mDNS name
 meshtui --demo               # synthetic mesh, no hardware needed
 meshtui --list-ports         # show candidate serial devices
 meshtui --debug              # also write meshtui.log
@@ -142,6 +144,54 @@ meshtui --audit              # offline channel security audit, then exit
 Only one process can hold the serial port at a time — the meshtastic library opens
 it exclusively, so a second `meshtui` (or the `meshtastic` CLI, or a serial monitor)
 will be told the port is busy.
+
+## Connecting over WiFi
+
+ESP32 nodes (Heltec, Station G2, T-Beam and friends) can serve the same protobuf
+stream over TCP that they serve over USB. The library's `TCPInterface` shares its
+base class with `SerialInterface`, so everything here — telemetry, the relay pane,
+noise floor, sensors, chat, traceroute — works identically. The USB cable is only
+ever a pipe; none of that data is produced by it.
+
+That lets you put the radio where the RF is good rather than where the computer is.
+
+**1. Enable WiFi on the node, over USB, in your own terminal** (so the password
+stays out of any logs):
+
+```sh
+uv run meshtastic --port /dev/ttyACM0 \
+  --set network.wifi_enabled true \
+  --set network.wifi_ssid "YourNetwork" \
+  --set network.wifi_psk "YourPassword"
+```
+
+The node reboots and joins the network.
+
+**2. Find it.** The firmware advertises `_meshtastic._tcp` over mDNS with its short
+name and node id:
+
+```sh
+meshtui --list-ports          # lists serial ports AND nodes found on WiFi
+```
+
+**3. Connect:**
+
+```sh
+meshtui -H 192.168.1.42
+meshtui -H meshtastic.local      # if mDNS resolves on your machine
+meshtui -H 192.168.1.42:4403     # explicit port
+```
+
+### Things to know first
+
+- **WiFi and Bluetooth are mutually exclusive on ESP32.** Enabling WiFi means that
+  node stops being reachable from the phone app over BLE.
+- **WiFi costs power.** Combined with a high `tx_power`, a 500 mA USB-A port may not
+  be enough — a node set to 30 dBm can want more than 2 W for the amplifier alone
+  during transmit. Use a proper supply for a node you intend to leave running.
+- **Only one client at a time**, same as serial.
+- Check `hasWifi` before assuming a board has it: `meshtastic --port ... --info`.
+  nRF52 boards (RAK4631 and similar) have no WiFi at all.
 
 ## Serial permissions
 
@@ -466,7 +516,8 @@ sqlite3 ~/.local/share/meshtui/mesh.db \
 
 The radio layer only ever calls one `emit(kind, payload)` callback, from its own
 thread; `app.py` marshals that onto the UI thread with `call_from_thread`. Adding a
-TCP, BLE or MQTT transport means writing another `RadioLink` subclass and nothing else.
+BLE or MQTT transport means writing another `RadioLink` subclass and nothing else —
+`TCPLink` was exactly that.
 
 ## Development
 

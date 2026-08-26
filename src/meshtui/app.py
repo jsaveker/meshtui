@@ -13,8 +13,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
-from .radio import (DemoLink, RadioLink, SerialLink, flatten, max_payload_bytes,
-                    traceroute_hops)
+from .radio import (DemoLink, RadioLink, SerialLink, TCPLink, flatten,
+                    max_payload_bytes, traceroute_hops)
 from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
 from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.audit import AuditScreen
@@ -63,10 +63,12 @@ class MeshTUI(App[None]):
     ]
 
     def __init__(self, port: str | None = None, demo: bool = False,
-                 store: Store | None = None, restore_limit: int = 3000) -> None:
+                 store: Store | None = None, restore_limit: int = 3000,
+                 host: str | None = None) -> None:
         super().__init__()
         self.state = MeshState()
         self.port = port
+        self.host = host
         self.demo = demo
         self.store = store
         self.restore_limit = restore_limit
@@ -111,7 +113,12 @@ class MeshTUI(App[None]):
         self._start_link()
 
     def _start_link(self) -> None:
-        self.link = DemoLink(self._emit) if self.demo else SerialLink(self._emit, self.port)
+        if self.demo:
+            self.link = DemoLink(self._emit)
+        elif self.host:
+            self.link = TCPLink(self._emit, self.host)
+        else:
+            self.link = SerialLink(self._emit, self.port)
         # Connecting blocks (serial handshake + config download), so keep it
         # off the UI thread.
         self.run_worker(self.link.start, thread=True, name="radio-connect")

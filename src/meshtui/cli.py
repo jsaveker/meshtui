@@ -7,7 +7,7 @@ import logging
 import sys
 import time
 
-from .radio import find_serial_ports
+from .radio import find_serial_ports, find_wifi_nodes
 from .store import Store, default_db_path
 
 
@@ -98,8 +98,14 @@ def main(argv: list[str] | None = None) -> int:
         description="Terminal dashboard for a Meshtastic mesh.",
     )
     parser.add_argument("-p", "--port", help="serial device (default: autodetect)")
+    parser.add_argument(
+        "-H", "--host", metavar="HOST[:PORT]",
+        help="connect over WiFi instead of USB, e.g. 192.168.1.42 or "
+             "meshtastic.local (default port 4403)",
+    )
     parser.add_argument("--demo", action="store_true", help="run against a synthetic mesh")
-    parser.add_argument("--list-ports", action="store_true", help="show candidate serial ports")
+    parser.add_argument("--list-ports", action="store_true",
+                        help="show candidate serial ports and any nodes found on WiFi")
     parser.add_argument("--debug", action="store_true", help="write debug log to meshtui.log")
     parser.add_argument("--db", help=f"database path (default: {default_db_path()})")
     parser.add_argument("--no-store", action="store_true", help="do not persist to disk")
@@ -121,12 +127,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_ports:
         ports = find_serial_ports()
-        if not ports:
-            print("no serial ports found")
-            return 1
+        print("serial:")
         for port in ports:
-            print(port)
-        return 0
+            print(f"  {port}")
+        if not ports:
+            print("  (none)")
+        print("wifi (mDNS):")
+        nodes = find_wifi_nodes()
+        for hostname, address, label in nodes:
+            print(f"  {address:<16} {hostname:<28} {label}")
+            print(f"      meshtui --host {address}")
+        if not nodes:
+            print("  (none found - a node only appears here once WiFi is enabled on it)")
+        return 0 if (ports or nodes) else 1
 
     if args.audit:
         return run_audit(args.db)
@@ -181,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         MeshTUI(port=args.port, demo=args.demo, store=store,
-                restore_limit=max(0, args.restore_limit)).run()
+                restore_limit=max(0, args.restore_limit), host=args.host).run()
     finally:
         if store is not None:
             store.close()
