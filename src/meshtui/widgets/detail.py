@@ -73,9 +73,41 @@ class NodeDetail(ModalScreen[None]):
         row("air tx", f"{node.air_util:.2f} %" if node.air_util is not None else None)
         row("dev uptime", fmt_duration(node.uptime) if node.uptime else None, "grey70")
 
+        if node.local_stats:
+            table.add_row("", Text(""))
+            st = node.local_stats
+            row("tx / rx", f"{st.get('numPacketsTx', 0):.0f} / "
+                           f"{st.get('numPacketsRx', 0):.0f}", "grey70")
+            row("rx bad", f"{st.get('numPacketsRxBad', 0):.0f}", "grey70")
+            row("rx dupe", f"{st.get('numRxDupe', 0):.0f}", "grey70")
+            row("relayed", f"{st.get('numTxRelay', 0):.0f}", "cyan")
+            if st.get("noiseFloor") is not None:
+                row("noise floor", f"{st['noiseFloor']:.0f} dBm", "yellow")
+            if st.get("numOnlineNodes") is not None:
+                row("sees", f"{st['numOnlineNodes']:.0f} of "
+                            f"{st.get('numTotalNodes', 0):.0f} nodes", "grey70")
+
+        if node.env:
+            table.add_row("", Text(""))
+            for key, value in sorted(node.env.items()):
+                row(key, f"{value:g}", "bright_green")
+
         if node.has_position:
             table.add_row("", Text(""))
             row("position", f"{node.lat:.5f}, {node.lon:.5f}", "bright_blue")
+            if node.precision_bits is not None:
+                metres = node.precision_metres
+                detail = f"{node.precision_bits} bits"
+                if metres:
+                    detail += f"  (~{metres / 1000:.1f} km steps)"
+                row("precision", detail, "dark_orange" if (metres or 0) > 500 else "grey70")
+            row("gps source", node.location_source.replace("LOC_", "").title(), "grey70")
+            row("satellites", node.sats, "grey70")
+            if node.moving:
+                heading = "" if node.heading_deg is None else f" heading {node.heading_deg:.0f}deg"
+                row("moving", f"{node.speed_mps:.0f} m/s"
+                              f" ({node.speed_mps * 3.6:.0f} km/h){heading}",
+                    "bold bright_yellow")
             row("altitude", f"{node.alt} m" if node.alt is not None else None, "bright_blue")
             row("map", f"https://www.google.com/maps?q={node.lat:.5f},{node.lon:.5f}", "blue")
         return table

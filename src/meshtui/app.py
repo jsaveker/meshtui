@@ -23,6 +23,8 @@ from .widgets.help import HelpScreen
 from .widgets.inspect import PacketInspector
 from .widgets.mesh_map import MapScreen
 from .widgets.nodes import NodeTable
+from .widgets.relays import RelayScreen
+from .widgets.sensors import SensorScreen
 from .widgets.packets import PacketFeed
 from .widgets.stats import StatsPane
 
@@ -49,6 +51,8 @@ class MeshTUI(App[None]):
         Binding("d", "dm_selected", "dm node"),
         Binding("m", "show_map", "map"),
         Binding("a", "show_audit", "audit"),
+        Binding("r", "show_relays", "relays"),
+        Binding("w", "show_sensors", "sensors"),
         Binding("t", "trace_selected", "trace"),
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
@@ -328,6 +332,12 @@ class MeshTUI(App[None]):
 
     def action_show_audit(self) -> None:
         self.push_screen(AuditScreen(self.state))
+
+    def action_show_relays(self) -> None:
+        self.push_screen(RelayScreen(self.state))
+
+    def action_show_sensors(self) -> None:
+        self.push_screen(SensorScreen(self.state))
 
     def action_node_detail(self) -> None:
         node = self._selected_node()

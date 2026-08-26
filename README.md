@@ -85,6 +85,12 @@ you hear directly:
   SNR / hops / age.
 - **Packet inspector** — full decoded protobuf and a hex dump for any packet.
 - **History** — everything logged to SQLite, restored on startup, exportable to CSV.
+- **Relay dependency** — which nodes actually carry your traffic, and what you lose
+  if one drops. Built from the `relay_node` byte every packet carries.
+- **Mesh health** — packet, duplicate and relay-cancel counters, noise floor and free
+  heap, from the `localStats` telemetry nodes broadcast about themselves.
+- **Sensors** — temperature, humidity, pressure, lux, air quality and more from any
+  node on the mesh running a sensor.
 - **Channel security audit** — grades your own channels' keys and flags any traffic
   on the mesh that is using a key published in Meshtastic's source.
 - **Demo mode** — a synthetic mesh, so you can try the whole thing with no hardware.
@@ -172,6 +178,8 @@ so `meshtui` would only run after you exit it, back in the original shell.)
 | `i` | inspect the selected packet |
 | `m` | open the map |
 | `a` | channel security audit |
+| `r` | relay dependency and mesh health |
+| `w` | sensors: environment and air quality |
 | `p` | pause / resume the packet feed |
 | `f` | cycle packet filter (all / chatty / text only) |
 | `s` | cycle node sort (heard / name / snr / hops / packets) |
@@ -198,6 +206,7 @@ pane title reads `typing, esc to leave`. Half-composed text is kept when you esc
 | `c` | cycle colour: SNR / hops / age |
 | `r` | toggle distance rings |
 | `i` | toggle direct links |
+| `t` | toggle movement trails |
 | `esc` / `m` | back to the dashboard |
 
 ## Chat commands
@@ -221,6 +230,63 @@ The count is in **bytes, not characters**: accented letters cost 2 and most emoj
 cost 4, so 60 emoji already exceed the limit. For `/dm <node> <text>` only `<text>`
 is counted, since the rest never goes on the air. Over-length messages are refused
 with an explanation, and your text is left in the box to trim.
+
+## Relay dependency (`r`)
+
+Every packet carries `relay_node`: the low byte of the node number that last
+forwarded it. It is the only routing evidence on the wire, and aggregated over a
+capture it shows what your view of the mesh actually rests on.
+
+```
+ relay                       share                  packets  origins  avg snr
+ SNTL  Santaluz Solar        ████████████   50.8%      1020      131   +6.2dB
+ e422  Meshtastic e422       ██████████░    44.7%       897      198  -16.4dB
+ 8176  Meshtastic 8176       ░               2.8%        56       31  -18.7dB
+ STLH  Santaluz Home  ?x4                    0.9%        19        2   +6.4dB
+
+ ! 2 relays carry 95.5% of your inbound traffic.
+   losing SNTL alone would cost you about 51% of what you hear.
+```
+
+Only one byte identifies the relay, so several known nodes can match; those rows
+are marked `?xN` rather than guessing.
+
+The same screen shows **mesh health** from `localStats` — the telemetry nodes
+broadcast about themselves. Duplicate rate and relay-cancel rate are direct
+congestion indicators, free heap catches nodes about to fall over, and noise floor
+tracks the RF environment.
+
+## Sensors (`w`)
+
+Any node with a sensor broadcasts readings to the whole mesh, which makes for a
+free weather network:
+
+```
+ node                 temp   humid    press     iaq      gas   pm2.5     age
+ KSR1  Kaiser Sola   47.7C     79%   986hPa     150      104       -  30m18s
+ BCWb  Barton Cree   30.6C     37%   987hPa       -        -       -   1h17m
+ KHB3  KohlBeam KJ   39.8C     26%   983hPa      60      202       3  12h22m
+```
+
+Columns appear only when some node is reporting that measurement. The protocol
+also carries wind, rainfall, soil moisture, radiation, CO2 and particulates —
+all handled if your mesh has them.
+
+## Motion and position precision
+
+Position packets carry more than coordinates. Nodes in motion report ground speed
+and heading, which the map draws as a spur in the direction of travel, with a
+trail of recent positions behind them (`t` toggles trails).
+
+Nodes also advertise `precision_bits` — how much location precision they chose to
+keep. Fewer bits means deliberate fuzzing, and the node detail view converts it to
+a real distance. A mesh where everyone reports 13 bits is quantising positions to
+roughly 5.8 km steps, so trails will look coarse; that is the senders' privacy
+setting, not a bug here.
+
+One correction worth recording: the protobuf comment for `ground_track` says
+"1/100 degrees" and is marked `TODO: REPLACE`. Real traffic disagrees — values
+like `23714000` are far past 36000, and `/1e5` gives 237.14°. meshtui uses 1e-5.
 
 ## Channel security audit (`a`)
 
@@ -307,7 +373,8 @@ sqlite3 ~/.local/share/meshtui/mesh.db \
 - `crypto.py` — channel key expansion, the nonce, AES-CTR, and PSK grading
 - `app.py` — the Textual app, keybindings, and the radio-to-UI thread bridge
 - `widgets/canvas.py` — braille drawing surface (dots, lines, circles, labels)
-- `widgets/` — node table, packet feed, chat, stats, map, node detail, inspector
+- `widgets/` — node table, packet feed, chat, stats, map, relays, sensors, audit,
+  node detail, packet inspector
 
 The radio layer only ever calls one `emit(kind, payload)` callback, from its own
 thread; `app.py` marshals that onto the UI thread with `call_from_thread`. Adding a

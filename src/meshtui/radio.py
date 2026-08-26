@@ -140,12 +140,45 @@ def _fmt_position(pos: dict[str, Any]) -> str:
         out += f"  {pos['altitude']}m"
     if pos.get("satsInView"):
         out += f"  {pos['satsInView']} sats"
+    speed = pos.get("groundSpeed")
+    if speed:
+        track = pos.get("groundTrack")
+        out += f"  {speed}m/s"
+        if track is not None:
+            # ground_track is scaled by 1e5 despite the protobuf comment.
+            out += f" @{(track / 1e5) % 360:.0f}deg"
     return out
+
+
+ENV_UNITS: list[tuple[str, str, str]] = [
+    ("temperature", "{:.1f}", "C"),
+    ("relativeHumidity", "{:.0f}", "%RH"),
+    ("barometricPressure", "{:.0f}", "hPa"),
+    ("lux", "{:.0f}", "lux"),
+    ("iaq", "{:.0f}", "IAQ"),
+    ("windSpeed", "{:.1f}", "m/s wind"),
+    ("windDirection", "{:.0f}", "deg"),
+    ("rainfall1H", "{:.1f}", "mm/h"),
+    ("soilMoisture", "{:.0f}", "% soil"),
+    ("radiation", "{:.2f}", "uSv/h"),
+    ("distance", "{:.0f}", "mm"),
+    ("weight", "{:.1f}", "kg"),
+    ("current", "{:.0f}", "mA"),
+]
+
+AIR_UNITS: list[tuple[str, str, str]] = [
+    ("pm25Standard", "{:.0f}", "PM2.5"),
+    ("pm10Standard", "{:.0f}", "PM10"),
+    ("pm100Standard", "{:.0f}", "PM100"),
+    ("co2", "{:.0f}", "ppm CO2"),
+]
 
 
 def _fmt_telemetry(tel: dict[str, Any]) -> str:
     dm = tel.get("deviceMetrics") or {}
     env = tel.get("environmentMetrics") or {}
+    air = tel.get("airQualityMetrics") or {}
+    local = tel.get("localStats") or {}
     bits: list[str] = []
     if dm.get("batteryLevel") is not None:
         volts = f" {dm['voltage']:.2f}V" if dm.get("voltage") else ""
@@ -154,12 +187,23 @@ def _fmt_telemetry(tel: dict[str, Any]) -> str:
         bits.append(f"chUtil {dm['channelUtilization']:.1f}%")
     if dm.get("airUtilTx") is not None:
         bits.append(f"airTx {dm['airUtilTx']:.1f}%")
-    if env.get("temperature") is not None:
-        bits.append(f"{env['temperature']:.1f}C")
-    if env.get("relativeHumidity") is not None:
-        bits.append(f"{env['relativeHumidity']:.0f}%RH")
-    if env.get("barometricPressure") is not None:
-        bits.append(f"{env['barometricPressure']:.0f}hPa")
+    for key, fmt, unit in ENV_UNITS:
+        if env.get(key) is not None:
+            bits.append(f"{fmt.format(env[key])}{unit}")
+    for key, fmt, unit in AIR_UNITS:
+        if air.get(key) is not None:
+            bits.append(f"{fmt.format(air[key])}{unit}")
+    if local:
+        # A node reporting on the health of its own view of the mesh.
+        tx, rx = local.get("numPacketsTx"), local.get("numPacketsRx")
+        if tx is not None and rx is not None:
+            bits.append(f"tx{tx}/rx{rx}")
+        if local.get("numRxDupe") is not None:
+            bits.append(f"dupe {local['numRxDupe']}")
+        if local.get("noiseFloor") is not None:
+            bits.append(f"noise {local['noiseFloor']:.0f}dBm")
+        if local.get("numOnlineNodes") is not None:
+            bits.append(f"{local['numOnlineNodes']}/{local.get('numTotalNodes', '?')} online")
     return "  ".join(bits) or "telemetry"
 
 
@@ -271,6 +315,8 @@ def flatten(raw: dict[str, Any]) -> Packet:
         hops=hops,
         packet_id=raw.get("id"),
         encrypted=portnum == "ENCRYPTED",
+        relay_node=raw.get("relayNode"),
+        via_mqtt=bool(raw.get("viaMqtt")),
         decrypted_with=decrypted_with,
         raw=raw,
     )

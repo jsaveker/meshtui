@@ -54,6 +54,27 @@ class ForeignChannel:
 
 
 @dataclass
+class RelayStat:
+    """Traffic relayed to us by one node, keyed by the low byte of its number.
+
+    Meshtastic only puts that single byte on the wire, so several nodes can
+    share a key; `candidates` records the ambiguity rather than hiding it.
+    """
+
+    byte: int
+    packets: int = 0
+    origins: set[str] = field(default_factory=set)
+    first_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
+    snr_sum: float = 0.0
+    snr_n: int = 0
+
+    @property
+    def avg_snr(self) -> float | None:
+        return self.snr_sum / self.snr_n if self.snr_n else None
+
+
+@dataclass
 class LocalChannel:
     """One of our own node's channels, where we can see the key."""
 
@@ -105,6 +126,9 @@ class MeshState:
         self.channels: list[str] = []
         self.local_channels: list[LocalChannel] = []
         self.foreign_channels: dict[int, ForeignChannel] = {}
+        self.relays: dict[int, RelayStat] = {}
+        self.relay_edges: Counter[tuple[str, int]] = Counter()
+        self.mqtt_packets: int = 0
         self.my_node_id: str | None = None
         self.my_node_name: str = ""
         self.device_path: str = ""
@@ -213,6 +237,11 @@ class MeshState:
     def add_packet(self, packet: Packet) -> None:
         self.packets.append(packet)
         self.stats.record(packet)
+        if packet.via_mqtt:
+            self.mqtt_packets += 1
+        self._record_relay(packet)
+        self._record_telemetry(packet)
+        self._record_motion(packet)
         # Packets we could not decrypt carry the channel HASH here; decoded
         # ones carry the channel INDEX. Only the former are "foreign".
         if packet.portnum == "ENCRYPTED" or packet.decrypted_with:
@@ -237,6 +266,103 @@ class MeshState:
                 node.rssi = packet.rssi
             if packet.hops is not None:
                 node.hops = packet.hops
+
+    def _record_relay(self, packet: Packet) -> None:
+        """Every packet names the node that last forwarded it - that is the
+        only routing evidence on the wire, and enough to build a real graph."""
+        byte = packet.relay_node
+        if byte is None:
+            return
+        relay = self.relays.get(byte)
+        if relay is None:
+            relay = RelayStat(byte=byte, first_seen=packet.ts)
+            self.relays[byte] = relay
+        relay.packets += 1
+        relay.last_seen = packet.ts
+        relay.origins.add(packet.from_id)
+        if packet.snr is not None:
+            relay.snr_sum += packet.snr
+            relay.snr_n += 1
+        # A packet relayed by its own originator is a direct reception, not a hop.
+        if packet.hops:
+            self.relay_edges[(packet.from_id, byte)] += 1
+
+    def _record_telemetry(self, packet: Packet) -> None:
+        if packet.portnum != "TELEMETRY_APP":
+            return
+        node = self.nodes.get(packet.from_id)
+        if node is None:
+            return
+        telemetry = ((packet.raw.get("decoded") or {}).get("telemetry") or {})
+        readings: dict[str, float] = {}
+        for section in ("environmentMetrics", "airQualityMetrics"):
+            for key, value in (telemetry.get(section) or {}).items():
+                if isinstance(value, (int, float)):
+                    readings[key] = float(value)
+        if readings:
+            node.env.update(readings)
+            node.env_ts = packet.ts
+        local = telemetry.get("localStats") or {}
+        if local:
+            node.local_stats = {k: float(v) for k, v in local.items()
+                                if isinstance(v, (int, float))}
+            node.local_stats_ts = packet.ts
+
+    def _record_motion(self, packet: Packet) -> None:
+        if packet.portnum != "POSITION_APP":
+            return
+        node = self.nodes.get(packet.from_id)
+        if node is None:
+            return
+        pos = ((packet.raw.get("decoded") or {}).get("position") or {})
+        speed = pos.get("groundSpeed")
+        if speed is not None:
+            node.speed_mps = float(speed)
+        track = pos.get("groundTrack")
+        if track is not None:
+            # Scaled by 1e5 on the wire; the protobuf comment saying 1/100
+            # degrees does not match what real nodes send.
+            node.heading_deg = (float(track) / 1e5) % 360.0
+        if pos.get("satsInView") is not None:
+            node.sats = int(pos["satsInView"])
+        if pos.get("precisionBits") is not None:
+            node.precision_bits = int(pos["precisionBits"])
+        if pos.get("locationSource"):
+            node.location_source = str(pos["locationSource"])
+
+        # Take coordinates from the packet itself rather than node.lat/lon: the
+        # latter comes from NodeDB snapshots, which arrive on their own schedule,
+        # so relying on it produces a track that never moves.
+        lat = pos.get("latitude")
+        lon = pos.get("longitude")
+        if lat is None and pos.get("latitudeI") is not None:
+            lat = pos["latitudeI"] * 1e-7
+        if lon is None and pos.get("longitudeI") is not None:
+            lon = pos["longitudeI"] * 1e-7
+        if lat is None or lon is None:
+            return
+        node.lat, node.lon = lat, lon
+        last = node.track[-1] if node.track else None
+        if last is None or abs(last[0] - lat) > 1e-6 or abs(last[1] - lon) > 1e-6:
+            node.track.append((lat, lon, packet.ts))
+
+    def resolve_relay(self, byte: int) -> list[Node]:
+        """Nodes whose number ends in this byte. More than one means ambiguity."""
+        return [n for n in self.nodes.values() if (n.num & 0xFF) == byte]
+
+    def relay_share(self) -> list[tuple[RelayStat, float]]:
+        """Relays sorted by share of all relayed traffic."""
+        total = sum(r.packets for r in self.relays.values()) or 1
+        return sorted(((r, r.packets / total) for r in self.relays.values()),
+                      key=lambda kv: -kv[1])
+
+    def sensor_nodes(self) -> list[Node]:
+        return sorted((n for n in self.nodes.values() if n.env),
+                      key=lambda n: -(n.env_ts or 0))
+
+    def stats_nodes(self) -> list[Node]:
+        return sorted((n for n in self.nodes.values() if n.local_stats),
+                      key=lambda n: -(n.local_stats_ts or 0))
 
     # ----------------------------------------------------------------- chat
 

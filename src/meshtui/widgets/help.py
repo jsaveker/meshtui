@@ -33,6 +33,12 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("f", "cycle filter: all / chatty / text only"),
         ("ctrl+l", "clear the feed"),
     ]),
+    ("views", [
+        ("m", "map of node positions"),
+        ("a", "channel security audit"),
+        ("r", "relay dependency and mesh health"),
+        ("w", "sensors: environment and air quality"),
+    ]),
     ("map", [
         ("m", "open the map"),
         ("arrows / hjkl", "pan"),
@@ -41,6 +47,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("c", "cycle colour: snr / hops / age"),
         ("r", "toggle distance rings"),
         ("i", "toggle direct links"),
+        ("t", "toggle movement trails"),
     ]),
     ("chat commands", [
         ("/dm <node> <text>", "direct message (short name or !id)"),

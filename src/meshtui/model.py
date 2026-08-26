@@ -82,6 +82,10 @@ class Packet:
     hops: int | None = None
     packet_id: int | None = None
     encrypted: bool = False
+    # Low byte of the node number that relayed this packet to us. The only
+    # routing evidence a packet carries, and enough to build a real graph.
+    relay_node: int | None = None
+    via_mqtt: bool = False
     # Set when a PUBLISHED key decrypted this packet - never a recovered secret.
     decrypted_with: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -120,6 +124,24 @@ class Node:
     # Recent per-packet SNR readings, oldest first, for the trend sparkline.
     snr_history: deque[float] = field(default_factory=lambda: deque(maxlen=SPARK_WIDTH))
 
+    # Motion, from POSITION_APP. Meshtastic sends ground_speed in m/s and
+    # ground_track scaled by 1e5 - note the protobuf comment claims 1/100
+    # degrees, but real traffic (e.g. 23714000 -> 237.14 deg) says otherwise.
+    speed_mps: float | None = None
+    heading_deg: float | None = None
+    sats: int | None = None
+    location_source: str = ""
+    # Bits of lat/lon precision the sender chose to keep. Fewer bits means the
+    # node is deliberately fuzzing its position.
+    precision_bits: int | None = None
+    track: deque[tuple[float, float, float]] = field(default_factory=lambda: deque(maxlen=40))
+
+    # Latest environment / air-quality readings, and the node's own mesh stats.
+    env: dict[str, float] = field(default_factory=dict)
+    env_ts: float | None = None
+    local_stats: dict[str, float] = field(default_factory=dict)
+    local_stats_ts: float | None = None
+
     @property
     def name(self) -> str:
         return self.long_name or self.short_name or self.node_id
@@ -138,6 +160,22 @@ class Node:
     @property
     def has_position(self) -> bool:
         return self.lat is not None and self.lon is not None
+
+    @property
+    def moving(self) -> bool:
+        return bool(self.speed_mps and self.speed_mps >= 1)
+
+    @property
+    def precision_metres(self) -> float | None:
+        """Quantisation step implied by precision_bits, in metres.
+
+        Meshtastic zeroes the low (32 - precision_bits) bits of the 1e-7 degree
+        latitude integer, so the step is 2^(32-bits) * 1e-7 degrees.
+        """
+        if self.precision_bits is None or self.precision_bits >= 32:
+            return None
+        step_deg = (2 ** (32 - self.precision_bits)) * 1e-7
+        return step_deg * 111320.0
 
 
 @dataclass

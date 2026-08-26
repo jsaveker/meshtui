@@ -160,6 +160,56 @@ async def main() -> int:
         if type(app.screen).__name__ == "AuditScreen":
             problems.append("escape did not close the audit screen")
 
+        # --- relay topology, mesh health, sensors ---
+        from meshtui.model import Packet as _P
+        _now = _t.time()
+        # two relays plus an ambiguous one, so share and warnings are exercised
+        for byte, count, origin in ((0x91, 40, "!aaaa0001"), (0x22, 35, "!aaaa0002"),
+                                    (0x76, 2, "!aaaa0003")):
+            for i in range(count):
+                app.state.add_packet(_P(ts=_now - i, from_id=origin, to_id="^all",
+                                        portnum="POSITION_APP", summary="pos",
+                                        snr=-5.0, hops=2, relay_node=byte, packet_id=9000 + i))
+        share = app.state.relay_share()
+        if not share or share[0][1] < 0.4:
+            problems.append(f"relay share wrong: {[(r.byte, round(f,2)) for r,f in share]}")
+        if len(app.state.relay_edges) != 3:
+            problems.append(f"expected 3 relay edges, got {len(app.state.relay_edges)}")
+
+        # telemetry + motion land on a node that exists
+        _target = next(iter(app.state.nodes.values()))
+        app.state.add_packet(_P(ts=_now, from_id=_target.node_id, to_id="^all",
+            portnum="TELEMETRY_APP", summary="t", packet_id=9500,
+            raw={"decoded": {"telemetry": {"environmentMetrics": {"temperature": 21.5,
+                 "relativeHumidity": 44}, "localStats": {"numPacketsRx": 100,
+                 "numRxDupe": 40, "noiseFloor": -101}}}}))
+        if _target.env.get("temperature") != 21.5:
+            problems.append("environment telemetry not recorded")
+        if _target.local_stats.get("numRxDupe") != 40:
+            problems.append("localStats not recorded")
+        for i, (lat, lon) in enumerate([(37.80, -122.27), (37.81, -122.28), (37.82, -122.29)]):
+            app.state.add_packet(_P(ts=_now + i, from_id=_target.node_id, to_id="^all",
+                portnum="POSITION_APP", summary="pos", packet_id=9600 + i,
+                raw={"decoded": {"position": {"latitude": lat, "longitude": lon,
+                     "groundSpeed": 7, "groundTrack": 23714000, "precisionBits": 13,
+                     "satsInView": 9}}}))
+        if len(_target.track) != 3:
+            problems.append(f"track has {len(_target.track)} points, expected 3")
+        if not _target.moving:
+            problems.append("node not flagged as moving")
+        if _target.heading_deg is None or abs(_target.heading_deg - 237.14) > 0.01:
+            problems.append(f"heading wrong: {_target.heading_deg} (expected 237.14)")
+        if _target.precision_metres is None or not (5000 < _target.precision_metres < 7000):
+            problems.append(f"precision metres wrong: {_target.precision_metres}")
+
+        for _key, _cls in (("r", "RelayScreen"), ("w", "SensorScreen")):
+            await pilot.press(_key); await pilot.pause(0.4)
+            if type(app.screen).__name__ != _cls:
+                problems.append(f"'{_key}' did not open {_cls}")
+            else:
+                app.screen.view.render_report()
+            await pilot.press("escape"); await pilot.pause(0.3)
+
         # --- braille map ---
         await pilot.press("m")
         await pilot.pause(0.5)

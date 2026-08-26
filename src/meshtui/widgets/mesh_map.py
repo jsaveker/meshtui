@@ -63,6 +63,7 @@ class MapView(Widget):
         self.color_mode = 0
         self.show_rings = True
         self.show_links = True
+        self.show_tracks = True
         self.status = ""
         # Canvas dot dimensions from the last render; fit() needs them to know
         # the aspect ratio it has to fit into.
@@ -202,6 +203,19 @@ class MapView(Widget):
                 x, y = to_px(node)
                 canvas.line(me_px[0], me_px[1], x, y, "grey27")
 
+        # Movement trails, drawn under the node marks.
+        if self.show_tracks:
+            for node in nodes:
+                if len(node.track) < 2:
+                    continue
+                points = [
+                    (cx + km_offsets(lat, lon, origin[0], origin[1])[0] * px_per_km,
+                     cy - km_offsets(lat, lon, origin[0], origin[1])[1] * px_per_km)
+                    for lat, lon, _ in node.track
+                ]
+                for (x0, y0), (x1, y1) in zip(points, points[1:]):
+                    canvas.line(x0, y0, x1, y1, "grey35")
+
         # Node marks. Size encodes hop distance, colour encodes the active mode.
         ranked = sorted(
             nodes,
@@ -220,6 +234,15 @@ class MapView(Widget):
                 canvas.blob(x, y, 2, self._style_for(node))
             else:
                 canvas.plot(x, y, self._style_for(node))
+
+            # A short spur in the direction of travel for anything moving.
+            if node.moving and node.heading_deg is not None:
+                theta = math.radians(node.heading_deg)
+                length = 6 + min(10, (node.speed_mps or 0))
+                canvas.line(x, y,
+                            x + math.sin(theta) * length,
+                            y - math.cos(theta) * length,
+                            "bold bright_yellow")
             placed.append((node, x, y))
 
         # Labels, best-first, skipping any that would collide.
@@ -242,6 +265,7 @@ class MapView(Widget):
             f"{len(nodes)} positioned / {len(self.state.nodes)} nodes   "
             f"span {fmt_km(self.span_km)}   furthest {fmt_km(far)}   "
             f"colour: {COLOR_MODES[self.color_mode]}"
+            + (f"   {moving} moving" if (moving := sum(1 for n in nodes if n.moving)) else "")
             + ("" if self.center is None else "   [panned]")
         )
         return canvas.render()
@@ -260,6 +284,7 @@ class MapScreen(Screen[None]):
         Binding("c", "color", "colour"),
         Binding("r", "rings", "rings"),
         Binding("i", "links", "links"),
+        Binding("t", "tracks", "trails"),
     ]
 
     def __init__(self, state: MeshState) -> None:
@@ -315,4 +340,8 @@ class MapScreen(Screen[None]):
 
     def action_links(self) -> None:
         self.view.show_links = not self.view.show_links
+        self.view.refresh(); self._refresh()
+
+    def action_tracks(self) -> None:
+        self.view.show_tracks = not self.view.show_tracks
         self.view.refresh(); self._refresh()
