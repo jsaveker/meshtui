@@ -247,3 +247,41 @@ AdminScreen { background: $surface; }
 }
 
 #admin-input:focus { background: $boost; }
+
+ChannelScreen { background: $surface; }
+
+#chan-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#chan-main { height: 1fr; }
+#chan-left { width: 44; }
+#chan-right { width: 1fr; }
+
+#chan-table {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    scrollbar-size-vertical: 1;
+}
+
+#chan-log {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+#chan-input {
+    height: 3;
+    border: none;
+    border-top: solid $primary-darken-2;
+    background: $surface;
+    padding: 0 1;
+}
+
+#chan-input:focus { background: $boost; }

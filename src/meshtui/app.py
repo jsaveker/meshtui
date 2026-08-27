@@ -20,6 +20,7 @@ from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
 from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.admin import AdminScreen
 from .widgets.audit import AuditScreen
+from .widgets.channels import ChannelScreen
 from .widgets.chat import ChatPane, LeaveChat
 from .widgets.detail import NodeDetail
 from .widgets.help import HelpScreen
@@ -59,6 +60,7 @@ class MeshTUI(App[None]):
         Binding("r", "show_relays", "relays"),
         Binding("w", "show_sensors", "sensors"),
         Binding("x", "show_admin", "remote admin"),
+        Binding("c", "show_channels", "channels"),
         Binding("A", "fix_autoadd", "auto-add on", show=False),
         Binding("V", "send_advert", "advert", show=False),
         Binding("t", "trace_selected", "trace"),
@@ -427,7 +429,7 @@ class MeshTUI(App[None]):
         elif kind == "mc_autoadd":
             self.state.radio_info["autoadd"] = payload
         elif kind == "mc_channels":
-            self.state.channels = list(payload) or ["public"]
+            self.state.channels = list(payload) or [(0, "Public")]
             self.run_worker(
                 self.query_one(ChatPane).set_channels(self.state.channels),
                 name="chat-tabs")
@@ -543,6 +545,7 @@ class MeshTUI(App[None]):
         self.state.protocol = info.get("protocol", "meshtastic")
         self.state.radio_info = dict(info.get("radio") or {})
         self.state.channels = list(info.get("channels") or ["LongFast"])
+        self.state.max_channels = int(info.get("max_channels") or 8)
         self.state.local_channels = [
             LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
                          level=c.get("level", "UNKNOWN"), detail=c.get("detail", ""),
@@ -682,6 +685,9 @@ class MeshTUI(App[None]):
             self.note("MeshCore only", "yellow")
             return
         self.link.send_advert(flood=True)
+
+    def action_show_channels(self) -> None:
+        self.push_screen(ChannelScreen(self.state, self.link))
 
     def action_show_admin(self) -> None:
         if self.state.protocol != "meshcore":

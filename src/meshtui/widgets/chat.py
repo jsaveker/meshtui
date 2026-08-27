@@ -115,18 +115,34 @@ class ChatPane(Vertical):
                 pass
         return ("channel", 0)
 
-    async def set_channels(self, names: list[str]) -> None:
-        """Rebuild the tab bar. Must await each mutation - Tabs removes and
-        mounts children asynchronously, and re-adding an id before its old
-        widget has finished unmounting wedges the message pump."""
+    async def set_channels(self, channels: list) -> None:
+        """Rebuild the tab bar from (index, name) pairs.
+
+        The tab id carries the REAL channel index, not its position: MeshCore
+        slots are sparse, so a channel can live at index 12 while being the
+        second tab, and messages must be addressed to 12.
+
+        Must await each mutation - Tabs removes and mounts children
+        asynchronously, and re-adding an id before its old widget has finished
+        unmounting wedges the message pump.
+        """
+        pairs: list[tuple[int, str]] = []
+        for item in (channels or []):
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                pairs.append((int(item[0]), str(item[1])))
+            else:  # a bare list of names (Meshtastic) is positional
+                pairs.append((len(pairs), str(item)))
+        if not pairs:
+            pairs = [(0, "LongFast")]
+
         tabs = self.tabs
         await tabs.clear()
-        for idx, name in enumerate(names or ["LongFast"]):
-            await tabs.add_tab(Tab(name or f"ch{idx}", id=f"ch{idx}"))
+        for index, name in pairs:
+            await tabs.add_tab(Tab(name or f"ch{index}", id=f"ch{index}"))
         for node_id in sorted(self._known_dms):
             await tabs.add_tab(Tab(f"@{node_id[-4:]}", id=dm_tab_id(node_id)))
-        if tabs.tab_count:
-            tabs.active = "ch0"
+        if pairs:
+            tabs.active = f"ch{pairs[0][0]}"
 
     async def ensure_dm_tab(self, node_id: str, label: str) -> str:
         tab_id = dm_tab_id(node_id)

@@ -115,6 +115,30 @@ emitted.clear()
 link._on_cli_reply(event({"pubkey_prefix": KEY, "response": "v1.17.1"}))
 check("cli reply", emitted[0], ("mc_cli", ("!2935ec59", "v1.17.1")))
 
+print("\nsparse channel slots keep their real index")
+import asyncio
+from meshtui.widgets.channels import parse_secret
+
+# MeshCore slots are not contiguous. A channel at slot 12 must still be
+# addressed as 12, not as "the third tab".
+state2 = MeshState()
+state2.channels = [(0, "Public"), (5, "#austin"), (12, "Ops")]
+check("name lookup by real index", state2.channel_name(12), "Ops")
+check("gap index is not a channel", state2.channel_name(3), "ch3")
+check("first slot still works", state2.channel_name(0), "Public")
+
+# A bare list of names (Meshtastic) stays positional.
+state3 = MeshState()
+state3.channels = ["LongFast", "Ops", "Private"]
+check("meshtastic list is positional", state3.channel_name(1), "Ops")
+
+print("\nchannel secret parsing")
+check("32 hex chars accepted", parse_secret("00112233445566778899aabbccddeeff"),
+      bytes.fromhex("00112233445566778899aabbccddeeff"))
+check("colons tolerated", parse_secret("00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff") is not None, True)
+check("wrong length rejected", parse_secret("00112233"), None)
+check("non-hex rejected", parse_secret("z" * 32), None)
+
 print("\nadmin replies attribute to the node we addressed")
 # LOGIN_SUCCESS only carries pubkey_prefix on long enough frames, and CLI_REPLY
 # never carries one at all - so a reply must be matched to who we asked.

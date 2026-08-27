@@ -123,7 +123,10 @@ class MeshState:
         self.packets: deque[Packet] = deque(maxlen=PACKET_BUFFER)
         self.chat: deque[ChatMessage] = deque(maxlen=CHAT_BUFFER)
         self.stats = Stats()
-        self.channels: list[str] = []
+        # (index, name) pairs - MeshCore slots are sparse, so position
+        # is not the channel number.
+        self.channels: list = []
+        self.max_channels: int = 8
         self.local_channels: list[LocalChannel] = []
         self.foreign_channels: dict[int, ForeignChannel] = {}
         self.relays: dict[int, RelayStat] = {}
@@ -436,8 +439,12 @@ class MeshState:
     # ---------------------------------------------------------------- misc
 
     def channel_name(self, index: int) -> str:
-        if 0 <= index < len(self.channels):
-            return self.channels[index]
+        for item in self.channels:
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                if int(item[0]) == index:
+                    return str(item[1])
+            elif self.channels.index(item) == index:
+                return str(item)
         return f"ch{index}"
 
     def reset_link(self) -> None:

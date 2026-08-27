@@ -39,6 +39,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("r", "relay dependency and mesh health"),
         ("w", "sensors: environment and air quality"),
         ("x", "remote admin (MeshCore repeaters)"),
+        ("c", "browse and edit channels"),
     ]),
     ("map", [
         ("m", "open the map"),

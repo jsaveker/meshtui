@@ -174,7 +174,10 @@ class MeshCoreLink(RadioLink):
         self._stopping = threading.Event()
         self._ready = threading.Event()
         self.contacts: dict[str, dict[str, Any]] = {}
-        self.channels: list[str] = []
+        self.channels: list[tuple[int, str]] = []
+        self.channel_secrets: dict[int, Any] = {}
+        # Replaced from the device query; 40 on current firmware.
+        self.max_channels: int = 8
         self.logged_in: set[str] = set()
         self.my_node_id: str = "self"
         # Replies to remote-admin traffic do not reliably identify their
@@ -242,6 +245,13 @@ class MeshCoreLink(RadioLink):
 
         self._wire_events(EventType)
         self.connected = True
+        # Ask the device how many channel slots it actually has before
+        # scanning them; firmware allows far more than the old hard-coded 8.
+        try:
+            query = self._payload(await self.mc.commands.send_device_query())
+            self.max_channels = int(query.get("max_channels") or self.max_channels)
+        except Exception:  # noqa: BLE001
+            pass
         # Channels first: announcing with an empty list and then filling it in
         # would leave two concurrent Tabs rebuilds racing each other.
         await self._load_channels()
@@ -440,6 +450,7 @@ class MeshCoreLink(RadioLink):
             "my_node_name": info.get("name") or "meshcore node",
             "firmware": f"MeshCore {info.get('ver', '?')}",
             "channels": list(self.channels),
+            "max_channels": self.max_channels,
             "channel_security": [],
             "protocol": "meshcore",
             "radio": {
@@ -477,18 +488,29 @@ class MeshCoreLink(RadioLink):
                       "to it cannot be decrypted and will fail. Press 'A' to enable it.")
 
     async def _load_channels(self) -> None:
-        names: list[str] = []
-        for index in range(8):
+        """Read every channel slot the device has.
+
+        Slots are not contiguous - a device can have channels at 0, 5 and 12 -
+        so this must scan the whole range rather than stopping at the first
+        empty one, and it must keep the real index because that is what
+        send_chan_msg addresses.
+        """
+        found: list[tuple[int, str]] = []
+        for index in range(self.max_channels):
             try:
                 result = await self.mc.commands.get_channel(index)
-            except Exception:  # noqa: BLE001
-                break
+            except Exception:  # noqa: BLE001 - a bad slot must not stop the scan
+                continue
             data = self._payload(result)
             name = (data.get("channel_name") or data.get("name") or "").strip()
-            if not name:
-                break
-            names.append(name)
-        self.channels = names or ["Public"]
+            secret = data.get("channel_secret")
+            # An unused slot has no name and an all-zero key.
+            if not name and not (secret and any(secret)):
+                continue
+            found.append((index, name or f"channel {index}"))
+            self.channel_secrets[index] = secret
+        self.channels = found or [(0, "Public")]
+        self.emit("mc_channels", list(self.channels))
 
     # ------------------------------------------------------------- commands
 
@@ -575,6 +597,29 @@ class MeshCoreLink(RadioLink):
         """
         self._submit(self.mc.commands.set_autoadd_config(flags))
         self.emit("status", f"contact auto-add set to 0x{flags:02x}")
+
+    def set_channel(self, index: int, name: str, secret: bytes | None = None) -> None:
+        """Create or replace a channel slot.
+
+        MeshCore derives the key from sha256(name)[:16] when the name starts
+        with '#' or no secret is given, which is how public channels are shared
+        by name alone. An explicit 16-byte secret is used verbatim.
+        """
+        future = self._submit(self.mc.commands.set_channel(index, name, secret))
+        if future is not None:
+            self.emit("status", f"channel {index} set to {name}")
+            self._submit(self._reload_channels())
+
+    def delete_channel(self, index: int) -> None:
+        """Blank a slot: empty name and an all-zero key."""
+        future = self._submit(self.mc.commands.set_channel(index, "", bytes(16)))
+        if future is not None:
+            self.emit("status", f"channel {index} cleared")
+            self._submit(self._reload_channels())
+
+    async def _reload_channels(self) -> None:
+        await asyncio.sleep(0.5)
+        await self._load_channels()
 
     def send_advert(self, flood: bool = False) -> None:
         self._submit(self.mc.commands.send_advert(flood=flood))

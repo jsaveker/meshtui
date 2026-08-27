@@ -147,6 +147,35 @@ is how you announce yourself so peers can message *you*. Contacts only appear as
 peers advertise, so a new node stays empty for a while — trigger an advert from the
 other device to speed it up.
 
+## Channels (`c`)
+
+A MeshCore radio has a fixed set of channel slots — 40 on current firmware — and
+they are **not filled contiguously**. A radio can have channels at slots 0, 5 and
+12 with everything between them empty, and the slot index is what a channel
+message is addressed to.
+
+```
+ channels  -  3 of 40 slots in use
+ ╭─ channel slots ──────────────────╮╭─ help ─────────────────────────────╮
+ │  #   name                    key ││ commands                           │
+ │  0   Public                  set ││   add <idx> <name>                 │
+ │  5   #austin             derived ││   add <idx> <name> <hex>           │
+ │ 12   Ops                     set ││   del <idx>                        │
+ │ 13   (empty)                     ││   refresh                          │
+ ╰──────────────────────────────────╯╰────────────────────────────────────╯
+```
+
+Keys work two ways. A name starting with `#` derives its key from
+`sha256(name)[:16]`, so anyone who knows the name can join — that is how public
+channels are shared. Supply an explicit 32-hex-character key instead for a private
+group:
+
+```
+add 5 #austin                                  join by name
+add 6 Ops 00112233445566778899aabbccddeeff     explicit 16-byte key
+del 6                                          clear the slot
+```
+
 ## Remote administration (`x`, MeshCore)
 
 MeshCore repeaters and room servers can be administered **over the air**: log in
@@ -302,6 +331,7 @@ so `meshtui` would only run after you exit it, back in the original shell.)
 | `i` | inspect the selected packet |
 | `m` | open the map |
 | `a` | channel security audit |
+| `c` | browse and edit channels |
 | `r` | relay dependency and mesh health |
 | `w` | sensors: environment and air quality |
 | `p` | pause / resume the packet feed |
