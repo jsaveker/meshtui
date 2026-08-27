@@ -176,6 +176,7 @@ class MeshCoreLink(RadioLink):
         self.contacts: dict[str, dict[str, Any]] = {}
         self.channels: list[str] = []
         self.logged_in: set[str] = set()
+        self.my_node_id: str = "self"
 
     # ------------------------------------------------------------ lifecycle
 
@@ -235,9 +236,11 @@ class MeshCoreLink(RadioLink):
 
         self._wire_events(EventType)
         self.connected = True
+        # Channels first: announcing with an empty list and then filling it in
+        # would leave two concurrent Tabs rebuilds racing each other.
+        await self._load_channels()
         await self._announce()
         await self._load_contacts()
-        await self._load_channels()
         await self._check_autoadd()
 
         # Pull queued messages the radio buffered while nothing was attached.
@@ -325,10 +328,10 @@ class MeshCoreLink(RadioLink):
         text = data.get("text") or data.get("msg") or ""
         self.emit("chat", ChatMessage(
             ts=data.get("sender_timestamp") or time.time(),
-            from_id=node_id, from_name="", to_id="self", text=text,
+            from_id=node_id, from_name="", to_id=self.my_node_id, text=text,
             channel=-1,
         ))
-        self._packet(PORT_TEXT, node_id, f'"{text}"', to_id="self",
+        self._packet(PORT_TEXT, node_id, f'"{text}"', to_id=self.my_node_id,
                      snr=data.get("snr"), raw=data)
 
     def _on_channel_message(self, event: Any) -> None:
@@ -408,6 +411,7 @@ class MeshCoreLink(RadioLink):
 
     async def _announce(self) -> None:
         info = dict(self.mc.self_info or {})
+        self.my_node_id = key_to_id(info.get("public_key"))
         try:
             query = await self.mc.commands.send_device_query()
             info.update(self._payload(query))
@@ -416,10 +420,10 @@ class MeshCoreLink(RadioLink):
         where = self.host or self.ble or self.port or "?"
         self.emit("connected", {
             "device": f"meshcore://{where}",
-            "my_node_id": key_to_id(info.get("public_key")),
+            "my_node_id": self.my_node_id,
             "my_node_name": info.get("name") or "meshcore node",
             "firmware": f"MeshCore {info.get('ver', '?')}",
-            "channels": [],
+            "channels": list(self.channels),
             "channel_security": [],
             "protocol": "meshcore",
             "radio": {
@@ -468,8 +472,7 @@ class MeshCoreLink(RadioLink):
             if not name:
                 break
             names.append(name)
-        self.channels = names or ["public"]
-        self.emit("mc_channels", self.channels)
+        self.channels = names or ["Public"]
 
     # ------------------------------------------------------------- commands
 
