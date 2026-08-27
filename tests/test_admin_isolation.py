@@ -1,4 +1,13 @@
-"""Prove admin input can never reach the mesh."""
+"""Admin input must never be transmitted to the mesh.
+
+Input.Submitted bubbles. The admin screen has its own input, and the app's
+handler transmits whatever it receives as a chat message - so without an
+event.stop() every remote-admin command, including the login password, was
+also broadcast to the current channel in the clear. This happened in the wild.
+
+This drives the real screen through the real event path with a spy in place of
+the radio, and fails if anything typed there reaches send_text.
+"""
 import asyncio
 from meshtui.app import MeshTUI
 from meshtui.widgets.admin import AdminScreen
