@@ -59,6 +59,8 @@ class MeshTUI(App[None]):
         Binding("r", "show_relays", "relays"),
         Binding("w", "show_sensors", "sensors"),
         Binding("x", "show_admin", "remote admin"),
+        Binding("A", "fix_autoadd", "auto-add on", show=False),
+        Binding("V", "send_advert", "advert", show=False),
         Binding("t", "trace_selected", "trace"),
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
@@ -422,6 +424,8 @@ class MeshTUI(App[None]):
                 return
             if self.store is not None:
                 self.store.save_node(node)
+        elif kind == "mc_autoadd":
+            self.state.radio_info["autoadd"] = payload
         elif kind == "mc_channels":
             self.state.channels = list(payload) or ["public"]
             self.run_worker(
@@ -664,6 +668,20 @@ class MeshTUI(App[None]):
 
     def action_show_sensors(self) -> None:
         self.push_screen(SensorScreen(self.state))
+
+    def action_fix_autoadd(self) -> None:
+        if self.state.protocol != "meshcore" or self.link is None:
+            self.note("MeshCore only", "yellow")
+            return
+        self.link.set_autoadd()
+        self.note("contact auto-add enabled - peers will be stored as they advert",
+                  "green")
+
+    def action_send_advert(self) -> None:
+        if self.state.protocol != "meshcore" or self.link is None:
+            self.note("MeshCore only", "yellow")
+            return
+        self.link.send_advert(flood=True)
 
     def action_show_admin(self) -> None:
         if self.state.protocol != "meshcore":

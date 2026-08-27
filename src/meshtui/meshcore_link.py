@@ -238,6 +238,7 @@ class MeshCoreLink(RadioLink):
         await self._announce()
         await self._load_contacts()
         await self._load_channels()
+        await self._check_autoadd()
 
         # Pull queued messages the radio buffered while nothing was attached.
         try:
@@ -441,6 +442,20 @@ class MeshCoreLink(RadioLink):
                 self.emit("mc_contact", contact)
         self.emit("status", f"{len(self.contacts)} contacts")
 
+    async def _check_autoadd(self) -> None:
+        try:
+            result = await self.mc.commands.get_autoadd_config()
+        except Exception:  # noqa: BLE001
+            return
+        config = self._payload(result)
+        flags = int(config.get("config") or 0)
+        self.emit("mc_autoadd", config)
+        if flags == 0:
+            self.emit("error",
+                      "contact auto-add is OFF on this radio, so it discards every "
+                      "advert and never learns anyone's public key. Direct messages "
+                      "to it cannot be decrypted and will fail. Press 'A' to enable it.")
+
     async def _load_channels(self) -> None:
         names: list[str] = []
         for index in range(8):
@@ -519,6 +534,24 @@ class MeshCoreLink(RadioLink):
             self.emit("error", f"no contact for {node_id}")
             return
         self._submit(self.mc.commands.send_telemetry_req(contact))
+
+    # Auto-add bits, from examples/companion_radio/MyMesh.cpp.
+    AUTOADD_OVERWRITE_OLDEST = 0x01
+    AUTOADD_CHAT = 0x02
+    AUTOADD_REPEATER = 0x04
+    AUTOADD_ROOM = 0x08
+    AUTOADD_SENSOR = 0x10
+    AUTOADD_ALL = 0x1F
+
+    def set_autoadd(self, flags: int = AUTOADD_ALL) -> None:
+        """Control which advert types become stored contacts.
+
+        With this at 0 the radio discards every advert, so it never learns a
+        peer's public key - and a MeshCore direct message cannot be decrypted
+        without the sender's key. The symptom is messages that simply fail.
+        """
+        self._submit(self.mc.commands.set_autoadd_config(flags))
+        self.emit("status", f"contact auto-add set to 0x{flags:02x}")
 
     def send_advert(self, flood: bool = False) -> None:
         self._submit(self.mc.commands.send_advert(flood=flood))

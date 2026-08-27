@@ -120,6 +120,33 @@ concept only exists on one side:
 | channel security audit (`a`) | yes | — |
 | remote admin (`x`) | — | yes |
 
+### If MeshCore direct messages fail
+
+MeshCore encrypts a direct message with an X25519 shared secret derived from the
+sender's private key and the recipient's public key. The recipient therefore needs
+the **sender's** public key to decrypt anything — and it only learns that from an
+advert.
+
+A radio with `autoadd_config = 0` discards every advert it hears. It still receives
+the packets, but holds no key for the sender, so it cannot decrypt the message and
+cannot acknowledge it. The sender sees a plain delivery failure with no clue why.
+
+meshtui warns about this on connect and `A` fixes it. The bits, from
+`examples/companion_radio/MyMesh.cpp`:
+
+| bit | meaning |
+|---|---|
+| `0x01` | overwrite oldest non-favourite when contacts are full |
+| `0x02` | auto-add Chat / companion nodes |
+| `0x04` | auto-add Repeaters |
+| `0x08` | auto-add Room Servers |
+| `0x10` | auto-add Sensors |
+
+`A` sets `0x1F` (all types, plus overwrite-oldest). `V` sends a flood advert, which
+is how you announce yourself so peers can message *you*. Contacts only appear as
+peers advertise, so a new node stays empty for a while — trigger an advert from the
+other device to speed it up.
+
 ## Remote administration (`x`, MeshCore)
 
 MeshCore repeaters and room servers can be administered **over the air**: log in
