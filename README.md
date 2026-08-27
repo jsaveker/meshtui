@@ -599,6 +599,7 @@ BLE or MQTT transport means writing another `RadioLink` subclass and nothing els
 uv run python tests/smoke.py    # headless end-to-end run against the demo mesh
 uv run python tests/test_crypto.py    # crypto pinned to upstream's test vectors
 uv run python tests/test_meshcore.py  # MeshCore mapping, no radio needed
+uv run python tests/test_admin_isolation.py  # admin input must never reach the mesh
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

@@ -757,6 +757,11 @@ class MeshTUI(App[None]):
             self.query_one(ChatPane).update_counter(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Only ever transmit what was typed into the chat box. Other screens
+        # have their own inputs whose submissions bubble up here, and treating
+        # those as chat would broadcast them to the mesh.
+        if event.input.id != "chat-input":
+            return
         text = event.value.strip()
         if not text:
             return

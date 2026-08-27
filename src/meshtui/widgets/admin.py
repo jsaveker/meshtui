@@ -168,6 +168,11 @@ class AdminScreen(Screen[None]):
         self.query_one("#admin-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # CRITICAL: stop the event here. Input.Submitted bubbles, and the app's
+        # own handler treats anything it receives as a chat message - so
+        # without this, every admin command (including the login password) is
+        # also broadcast to the current channel.
+        event.stop()
         text = event.value.strip()
         event.input.value = ""
         if not text:
