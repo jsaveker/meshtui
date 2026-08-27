@@ -115,6 +115,33 @@ emitted.clear()
 link._on_cli_reply(event({"pubkey_prefix": KEY, "response": "v1.17.1"}))
 check("cli reply", emitted[0], ("mc_cli", ("!2935ec59", "v1.17.1")))
 
+print("\nadmin replies attribute to the node we addressed")
+# LOGIN_SUCCESS only carries pubkey_prefix on long enough frames, and CLI_REPLY
+# never carries one at all - so a reply must be matched to who we asked.
+link.contacts["!2935ec59"] = {"public_key": KEY, "adv_name": "Repeater"}
+link.logged_in.clear()
+link._pending_login = "!2935ec59"
+link._on_login_ok(event({"permissions": 1, "is_admin": True}))   # no pubkey field
+check("keyless login attributes to the target", "!2935ec59" in link.logged_in, True)
+check("phantom node not created", "!00000000" in link.logged_in, False)
+check("admin target remembered", link._admin_target, "!2935ec59")
+
+emitted.clear()
+link._on_cli_reply(event({"text": "v1.17.1"}))                   # CLI_REPLY has no key
+check("keyless cli reply attributes to the target",
+      emitted[0], ("mc_cli", ("!2935ec59", "v1.17.1")))
+
+# When the payload does identify the sender, that wins over the fallback.
+link._admin_target = "!ffffffff"
+emitted.clear()
+link._on_cli_reply(event({"pubkey_prefix": KEY[:12], "text": "from me"}))
+check("payload key beats the fallback", emitted[0][1][0], "!2935ec59")
+
+link.logged_in.clear()
+link._pending_login = "!2935ec59"
+link._on_login_fail(event({}))
+check("keyless failure clears the right node", link.logged_in, set())
+
 print("\ncommands refuse unknown contacts rather than crashing")
 emitted.clear()
 link.remote_command("!deadbeef", "ver")

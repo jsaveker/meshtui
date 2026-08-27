@@ -177,6 +177,12 @@ class MeshCoreLink(RadioLink):
         self.channels: list[str] = []
         self.logged_in: set[str] = set()
         self.my_node_id: str = "self"
+        # Replies to remote-admin traffic do not reliably identify their
+        # sender: CLI_REPLY carries only text, and LOGIN_SUCCESS includes a
+        # pubkey prefix only on long enough frames. Remember who we addressed
+        # so a reply can be attributed to the right node.
+        self._pending_login: str | None = None
+        self._admin_target: str | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -364,7 +370,7 @@ class MeshCoreLink(RadioLink):
 
     def _on_telemetry(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
+        node_id = self._attribute(data, self._admin_target)
         self.emit("mc_telemetry", (node_id, data))
         self._packet(PORT_TELEM, node_id, _fmt_telemetry(data), raw=data)
 
@@ -378,28 +384,38 @@ class MeshCoreLink(RadioLink):
                      f"rx {data.get('payload_len', '?')}B",
                      snr=data.get("snr"), rssi=data.get("rssi"), raw=data)
 
+    def _attribute(self, data: dict[str, Any], fallback: str | None) -> str:
+        """Whose reply is this? Prefer the payload, fall back to who we asked."""
+        key = data.get("pubkey_prefix") or data.get("public_key")
+        if key:
+            return key_to_id(key)
+        return fallback or "!00000000"
+
     def _on_status(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
+        node_id = self._attribute(data, self._admin_target)
         self.emit("mc_status", (node_id, data))
         self._packet(PORT_STATUS, node_id, _fmt_status(data), raw=data)
 
     def _on_cli_reply(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
+        node_id = self._attribute(data, self._admin_target)
         text = str(data.get("response") or data.get("text") or data.get("value") or "")
         self.emit("mc_cli", (node_id, text))
         self._packet(PORT_CLI, node_id, text[:80], raw=data)
 
     def _on_login_ok(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
+        node_id = self._attribute(data, self._pending_login)
+        self._pending_login = None
+        self._admin_target = node_id
         self.logged_in.add(node_id)
         self.emit("mc_login", (node_id, True))
 
     def _on_login_fail(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
+        node_id = self._attribute(data, self._pending_login)
+        self._pending_login = None
         self.logged_in.discard(node_id)
         self.emit("mc_login", (node_id, False))
 
@@ -508,6 +524,7 @@ class MeshCoreLink(RadioLink):
         if contact is None:
             self.emit("error", f"no contact for {node_id}")
             return
+        self._pending_login = node_id
         self._submit(self.mc.commands.send_login(contact, password))
         self.emit("status", f"login sent to {node_id}")
 
@@ -522,6 +539,7 @@ class MeshCoreLink(RadioLink):
         if contact is None:
             self.emit("error", f"no contact for {node_id}")
             return
+        self._admin_target = node_id
         self._submit(self.mc.commands.send_cmd(contact, command))
 
     def request_status(self, node_id: str) -> None:
@@ -529,6 +547,7 @@ class MeshCoreLink(RadioLink):
         if contact is None:
             self.emit("error", f"no contact for {node_id}")
             return
+        self._admin_target = node_id
         self._submit(self.mc.commands.send_statusreq(contact))
 
     def request_telemetry(self, node_id: str) -> None:
@@ -536,6 +555,7 @@ class MeshCoreLink(RadioLink):
         if contact is None:
             self.emit("error", f"no contact for {node_id}")
             return
+        self._admin_target = node_id
         self._submit(self.mc.commands.send_telemetry_req(contact))
 
     # Auto-add bits, from examples/companion_radio/MyMesh.cpp.
