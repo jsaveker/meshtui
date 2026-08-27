@@ -137,6 +137,12 @@ class MeshState:
         self.device_path: str = ""
         self.firmware: str = ""
         self.connected: bool = False
+        # 'meshtastic' or 'meshcore' - the panes differ by protocol.
+        self.protocol: str = "meshtastic"
+        self.radio_info: dict[str, Any] = {}
+        # MeshCore only: repeaters we hold an admin session with.
+        self.admin_sessions: set[str] = set()
+        self.cli_log: deque[tuple[float, str, str]] = deque(maxlen=500)
 
     # ---------------------------------------------------------------- nodes
 

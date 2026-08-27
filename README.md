@@ -1,8 +1,9 @@
 # meshtui
 
-A terminal dashboard for a [Meshtastic](https://meshtastic.org) mesh: live packet
-feed, node table, chat, mesh statistics, and a braille map of where everything is
-— all in one TUI, over USB serial.
+A terminal dashboard for [Meshtastic](https://meshtastic.org) **and**
+[MeshCore](https://meshcore.co.uk) meshes: live packet feed, node table, chat, mesh
+statistics, a braille map of where everything is, and remote administration of
+MeshCore repeaters over RF — all in one TUI.
 
 ```
   * Basecamp Relay  demo://synthetic-mesh  fw 2.5.0.demo   new message from HARB
@@ -94,6 +95,52 @@ you hear directly:
 - **Channel security audit** — grades your own channels' keys and flags any traffic
   on the mesh that is using a key published in Meshtastic's source.
 - **Demo mode** — a synthetic mesh, so you can try the whole thing with no hardware.
+
+## Two protocols
+
+meshtui speaks both mesh protocols and works out which one is attached:
+
+```sh
+meshtui                          # probe the radio and pick the right protocol
+meshtui --protocol meshcore      # force MeshCore
+meshtui --protocol meshtastic    # force Meshtastic
+```
+
+Detection probes for MeshCore first, because it fails fast — the Meshtastic
+library blocks waiting for a config dump that a MeshCore node never sends, so
+trying that first would hang on the wrong hardware.
+
+Most panes work for both. A few are protocol-specific, because the underlying
+concept only exists on one side:
+
+| pane | Meshtastic | MeshCore |
+|---|---|---|
+| packets, nodes, chat, map, stats | yes | yes |
+| relay dependency (`r`) | yes | — (MeshCore routes by explicit path, not relay-flooding) |
+| channel security audit (`a`) | yes | — |
+| remote admin (`x`) | — | yes |
+
+## Remote administration (`x`, MeshCore)
+
+MeshCore repeaters and room servers can be administered **over the air**: log in
+with the node's password and run its console commands across the mesh. No cable,
+no climbing onto the roof.
+
+```
+ remote admin  Santaluz Solar  authenticated
+ ╭─ repeaters ────────────╮╭─ session ──────────────────────────────╮
+ │ * Santaluz Solar  REPE ││ 16:12:04 > login to Santaluz Solar ... │
+ │   Tachyon Mobile  CHAT ││ 16:12:09 Santaluz Solar ** logged in **│
+ ╰────────────────────────╯│ 16:12:15 > ver                         │
+ ╭─ commands ─────────────╮│ 16:12:21 Santaluz Solar v1.17.1        │
+ │  ver      firmware ver ││                                        │
+ │  advert   send advert  ││                                        │
+ ╰────────────────────────╯╰────────────────────────────────────────╯
+```
+
+Select a repeater, type `login <password>`, then send commands. `F2` requests
+status, `F3` telemetry, `F4` logs out. Replies travel over LoRa, so they take
+seconds and can be lost — the session log shows exactly what came back.
 
 ## Quick start
 
@@ -523,7 +570,8 @@ BLE or MQTT transport means writing another `RadioLink` subclass and nothing els
 
 ```sh
 uv run python tests/smoke.py    # headless end-to-end run against the demo mesh
-uv run python tests/test_crypto.py  # crypto pinned to upstream's test vectors
+uv run python tests/test_crypto.py    # crypto pinned to upstream's test vectors
+uv run python tests/test_meshcore.py  # MeshCore mapping, no radio needed
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

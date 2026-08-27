@@ -1,0 +1,130 @@
+"""MeshCore mapping tests. No radio required.
+
+MeshCore's data model differs from Meshtastic's - contacts keyed by X25519
+public key rather than a node database - so the translation into meshtui's
+shared model is where bugs would hide.
+"""
+
+import sys
+import time
+import types
+
+from meshtui.meshcore_link import (
+    CONTACT_TYPES,
+    MeshCoreLink,
+    contact_to_node,
+    key_to_id,
+    key_to_num,
+)
+from meshtui.state import MeshState
+
+failures: list[str] = []
+
+
+def check(name, got, want):
+    if got == want:
+        print(f"  ok   {name}")
+    else:
+        print(f"  FAIL {name}: got {got!r}, want {want!r}")
+        failures.append(name)
+
+
+print("public key -> node id")
+KEY = "2935ec595f468726c747752a62cb04060fc493da511f3c1fd8055b79106b1555"
+check("hex key truncates to 8", key_to_id(KEY), "!2935ec59")
+check("bytes accepted", key_to_id(bytes.fromhex(KEY)), "!2935ec59")
+check("numeric id matches", key_to_num(KEY), 0x2935EC59)
+check("empty key is safe", key_to_id(None), "!00000000")
+check("stable across calls", key_to_id(KEY), key_to_id(KEY.upper()))
+
+print("\ncontact -> node record")
+contact = {
+    "public_key": KEY,
+    "adv_name": "Santaluz Solar",
+    "type": 2,                      # repeater
+    "adv_lat": 30.34,
+    "adv_lon": -97.92,
+    "out_path_len": 2,
+    "last_advert": 1787000000,
+}
+record = contact_to_node(contact)
+check("id", record["user"]["id"], "!2935ec59")
+check("long name", record["user"]["longName"], "Santaluz Solar")
+check("short name derived", record["user"]["shortName"], "Sant")
+check("type mapped", record["user"]["hwModel"], "REPEATER")
+check("hops from path length", record["hopsAway"], 2)
+check("position carried", record["position"]["latitude"], 30.34)
+check("last advert carried", record["lastHeard"], 1787000000)
+
+# A flood-routed contact reports -1, which is "no fixed path", not zero hops.
+flood = contact_to_node({"public_key": KEY, "adv_name": "X", "out_path_len": -1})
+check("flood route has no hop count", "hopsAway" in flood, False)
+
+unnamed = contact_to_node({"public_key": KEY})
+check("unnamed falls back to id", unnamed["user"]["longName"], "!2935ec59")
+
+print("\ncontact types")
+for value, label in CONTACT_TYPES.items():
+    got = contact_to_node({"public_key": KEY, "type": value})["user"]["hwModel"]
+    check(f"type {value} -> {label}", got, label)
+
+print("\nrecords feed MeshState cleanly")
+state = MeshState()
+node = state.upsert_node(contact_to_node(contact))
+check("node registered", node.node_id, "!2935ec59")
+check("name available", node.name, "Santaluz Solar")
+check("role usable by the admin screen", node.role, "REPEATER")
+check("position parsed", node.has_position, True)
+
+print("\nevent handlers emit the right kinds")
+emitted = []
+link = MeshCoreLink(lambda k, p: emitted.append((k, p)))
+
+
+def event(payload):
+    return types.SimpleNamespace(payload=payload)
+
+
+link._on_advert(event({"public_key": KEY, "adv_name": "Solar", "snr": 6.25}))
+kinds = [k for k, _ in emitted]
+check("advert emits contact + packet", kinds, ["mc_contact", "packet"])
+packet = emitted[-1][1]
+check("advert packet port", packet.portnum, "ADVERT_APP")
+check("advert snr carried", packet.snr, 6.25)
+
+emitted.clear()
+link._on_channel_message(event({"pubkey_prefix": KEY, "text": "hello mesh",
+                                "channel_idx": 0}))
+check("channel msg emits chat + packet", [k for k, _ in emitted], ["chat", "packet"])
+check("chat text", emitted[0][1].text, "hello mesh")
+check("chat channel", emitted[0][1].channel, 0)
+
+emitted.clear()
+link._on_direct_message(event({"pubkey_prefix": KEY, "text": "dm here"}))
+check("dm is not a broadcast channel", emitted[0][1].channel, -1)
+check("dm addressed to us", emitted[0][1].to_id, "self")
+
+emitted.clear()
+link._on_login_ok(event({"pubkey_prefix": KEY}))
+check("login success emitted", emitted[0], ("mc_login", ("!2935ec59", True)))
+check("session recorded", "!2935ec59" in link.logged_in, True)
+link._on_login_fail(event({"pubkey_prefix": KEY}))
+check("failed login clears the session", "!2935ec59" in link.logged_in, False)
+
+emitted.clear()
+link._on_cli_reply(event({"pubkey_prefix": KEY, "response": "v1.17.1"}))
+check("cli reply", emitted[0], ("mc_cli", ("!2935ec59", "v1.17.1")))
+
+print("\ncommands refuse unknown contacts rather than crashing")
+emitted.clear()
+link.remote_command("!deadbeef", "ver")
+check("unknown contact errors", emitted[0][0], "error")
+emitted.clear()
+ok, _ = link.send_text("hi", dest="!deadbeef")
+check("send to unknown contact fails cleanly", ok, False)
+
+print()
+if failures:
+    print(f"FAIL: {len(failures)} check(s): {', '.join(failures)}")
+    sys.exit(1)
+print("PASS")

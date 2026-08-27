@@ -13,10 +13,12 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Input, Static, Tabs
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
+from .meshcore_link import MeshCoreLink, contact_to_node, probe_meshcore
 from .radio import (DemoLink, RadioLink, SerialLink, TCPLink, flatten,
-                    max_payload_bytes, traceroute_hops)
+                    find_serial_ports, max_payload_bytes, traceroute_hops)
 from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
 from .store import LAST_OBSERVER, Store, state_ts_key
+from .widgets.admin import AdminScreen
 from .widgets.audit import AuditScreen
 from .widgets.chat import ChatPane, LeaveChat
 from .widgets.detail import NodeDetail
@@ -56,6 +58,7 @@ class MeshTUI(App[None]):
         Binding("a", "show_audit", "audit"),
         Binding("r", "show_relays", "relays"),
         Binding("w", "show_sensors", "sensors"),
+        Binding("x", "show_admin", "remote admin"),
         Binding("t", "trace_selected", "trace"),
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
@@ -64,11 +67,12 @@ class MeshTUI(App[None]):
 
     def __init__(self, port: str | None = None, demo: bool = False,
                  store: Store | None = None, restore_limit: int = 3000,
-                 host: str | None = None) -> None:
+                 host: str | None = None, protocol: str = "auto") -> None:
         super().__init__()
         self.state = MeshState()
         self.port = port
         self.host = host
+        self.protocol = protocol
         self.demo = demo
         self.store = store
         self.restore_limit = restore_limit
@@ -115,13 +119,36 @@ class MeshTUI(App[None]):
     def _start_link(self) -> None:
         if self.demo:
             self.link = DemoLink(self._emit)
-        elif self.host:
-            self.link = TCPLink(self._emit, self.host)
-        else:
-            self.link = SerialLink(self._emit, self.port)
-        # Connecting blocks (serial handshake + config download), so keep it
-        # off the UI thread.
-        self.run_worker(self.link.start, thread=True, name="radio-connect")
+            self.run_worker(self.link.start, thread=True, name="radio-connect")
+            return
+        # Both probing and connecting block, so choose and connect on a worker.
+        self.run_worker(self._connect_worker, thread=True, name="radio-connect")
+
+    def _connect_worker(self) -> None:
+        link = self._choose_link()
+        self.link = link
+        link.start()
+
+    def _choose_link(self) -> RadioLink:
+        """Pick a transport, probing the hardware when asked to autodetect."""
+        protocol = self.protocol
+        if protocol == "auto" and not self.host:
+            port = self.port or next(iter(find_serial_ports()), None)
+            if port and probe_meshcore(port):
+                self.note(f"detected a MeshCore radio on {port}", "grey70")
+                protocol = "meshcore"
+            else:
+                protocol = "meshtastic"
+        elif protocol == "auto":
+            protocol = "meshtastic"
+
+        if protocol == "meshcore":
+            return MeshCoreLink(self._emit, port=self.port or
+                                next(iter(find_serial_ports()), None),
+                                host=self.host)
+        if self.host:
+            return TCPLink(self._emit, self.host)
+        return SerialLink(self._emit, self.port)
 
     def on_unmount(self) -> None:
         if self.link is not None:
@@ -388,6 +415,37 @@ class MeshTUI(App[None]):
                 if self.store is not None:
                     self.store.ack_message(int(payload))
                 self.query_one(ChatPane).rerender(self.state)
+        elif kind == "mc_contact":
+            try:
+                node = self.state.upsert_node(contact_to_node(payload))
+            except (ValueError, AttributeError):
+                return
+            if self.store is not None:
+                self.store.save_node(node)
+        elif kind == "mc_channels":
+            self.state.channels = list(payload) or ["public"]
+            self.run_worker(
+                self.query_one(ChatPane).set_channels(self.state.channels),
+                name="chat-tabs")
+        elif kind == "mc_login":
+            node_id, ok = payload
+            if ok:
+                self.state.admin_sessions.add(node_id)
+                self.note(f"logged in to {self.state.node_name(node_id)}", "green")
+            else:
+                self.state.admin_sessions.discard(node_id)
+                self.note(f"login refused by {self.state.node_name(node_id)}", "red")
+            self.state.cli_log.append(
+                (time.time(), node_id, "** logged in **" if ok else "** login refused **"))
+        elif kind == "mc_cli":
+            node_id, text = payload
+            self.state.cli_log.append((time.time(), node_id, text))
+        elif kind == "mc_status":
+            node_id, data = payload
+            self.state.cli_log.append((time.time(), node_id, f"status: {data}"))
+        elif kind == "mc_telemetry":
+            node_id, data = payload
+            self.state.cli_log.append((time.time(), node_id, f"telemetry: {data}"))
         elif kind == "status":
             self.note(str(payload))
         elif kind == "error":
@@ -478,6 +536,8 @@ class MeshTUI(App[None]):
         self.state.my_node_name = info.get("my_node_name") or ""
         self.state.firmware = info.get("firmware") or ""
         self.state.device_path = info.get("device") or ""
+        self.state.protocol = info.get("protocol", "meshtastic")
+        self.state.radio_info = dict(info.get("radio") or {})
         self.state.channels = list(info.get("channels") or ["LongFast"])
         self.state.local_channels = [
             LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
@@ -491,8 +551,21 @@ class MeshTUI(App[None]):
                 f"{len(weak)} of your channels are not private - press 'a' for the audit",
                 "bold red",
             )
-        if self.state.my_node_id and self.state.my_node_id in self.state.nodes:
-            self.state.nodes[self.state.my_node_id].is_self = True
+        if self.state.my_node_id:
+            # MeshCore has no self-contact, so make sure the local radio is in
+            # the node table like Meshtastic's NodeDB puts it there.
+            try:
+                me = self.state.upsert_node({
+                    "num": int(self.state.my_node_id.lstrip("!"), 16),
+                    "user": {"id": self.state.my_node_id,
+                             "longName": self.state.my_node_name or "this radio",
+                             "shortName": (self.state.my_node_name or "self")[:4],
+                             "hwModel": info.get("protocol", "").upper() or ""},
+                })
+                me.is_self = True
+                me.last_heard = time.time()
+            except (ValueError, AttributeError):
+                pass
         self._restore_for_observer()
         self.run_worker(
             self.query_one(ChatPane).set_channels(self.state.channels),
@@ -529,7 +602,10 @@ class MeshTUI(App[None]):
         left.append("  ")
         left.append(where, style="grey62")
         if state.firmware:
-            left.append(f"  fw {state.firmware}", style="grey42")
+            left.append(f"  {state.firmware}", style="grey42")
+        radio = state.radio_info
+        if radio.get("freq"):
+            left.append(f"  {radio['freq']}MHz sf{radio.get('sf')}", style="grey42")
 
         if self._status_note and time.time() < self._note_until:
             text, style = self._status_note
@@ -588,6 +664,12 @@ class MeshTUI(App[None]):
 
     def action_show_sensors(self) -> None:
         self.push_screen(SensorScreen(self.state))
+
+    def action_show_admin(self) -> None:
+        if self.state.protocol != "meshcore":
+            self.note("remote admin is a MeshCore feature", "yellow")
+            return
+        self.push_screen(AdminScreen(self.state, self.link))
 
     def action_node_detail(self) -> None:
         node = self._selected_node()

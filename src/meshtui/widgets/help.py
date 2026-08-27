@@ -38,6 +38,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("a", "channel security audit"),
         ("r", "relay dependency and mesh health"),
         ("w", "sensors: environment and air quality"),
+        ("x", "remote admin (MeshCore repeaters)"),
     ]),
     ("map", [
         ("m", "open the map"),
@@ -57,6 +58,12 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("/help", "command help"),
     ]),
 ]
+
+PROTOCOL_NOTE = (
+    "meshtui speaks both Meshtastic and MeshCore. The protocol is detected from "
+    "the radio;\nforce it with --protocol. Some panes are protocol-specific: relay "
+    "analysis and the\nchannel audit are Meshtastic, remote admin is MeshCore."
+)
 
 NOTE = (
     "While the message box has focus, every letter is text - single-key "
@@ -83,6 +90,8 @@ class HelpScreen(ModalScreen[None]):
                 table.add_row(key, desc)
             parts.extend([table, Text("")])
         parts.append(Text(NOTE, style="yellow"))
+        parts.append(Text(""))
+        parts.append(Text(PROTOCOL_NOTE, style="grey54"))
         return Group(*parts)
 
     def action_dismiss(self) -> None:

@@ -9,6 +9,7 @@ dependencies = [
     "textual>=1.0",
     "pypubsub>=4.0.3",
     "cryptography>=50.0.1",
+    "meshcore>=2.3.9.1",
 ]
 
 [project.scripts]

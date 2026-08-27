@@ -104,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
              "meshtastic.local (default port 4403)",
     )
     parser.add_argument("--demo", action="store_true", help="run against a synthetic mesh")
+    parser.add_argument(
+        "--protocol", choices=("auto", "meshtastic", "meshcore"), default="auto",
+        help="mesh protocol to speak (default: auto - probes the radio)",
+    )
     parser.add_argument("--list-ports", action="store_true",
                         help="show candidate serial ports and any nodes found on WiFi")
     parser.add_argument("--debug", action="store_true", help="write debug log to meshtui.log")
@@ -194,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         MeshTUI(port=args.port, demo=args.demo, store=store,
-                restore_limit=max(0, args.restore_limit), host=args.host).run()
+                restore_limit=max(0, args.restore_limit), host=args.host,
+                protocol=args.protocol).run()
     finally:
         if store is not None:
             store.close()

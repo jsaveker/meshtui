@@ -202,3 +202,48 @@ RelayScreen, SensorScreen {
     background: $surface;
     scrollbar-size-vertical: 1;
 }
+
+AdminScreen { background: $surface; }
+
+#admin-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#admin-main { height: 1fr; }
+
+#admin-left { width: 52; }
+#admin-right { width: 1fr; }
+
+#admin-nodes {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    scrollbar-size-vertical: 1;
+}
+
+#admin-hints {
+    height: 21;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#admin-log {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+#admin-input {
+    height: 3;
+    border: none;
+    border-top: solid $primary-darken-2;
+    background: $surface;
+    padding: 0 1;
+}
+
+#admin-input:focus { background: $boost; }

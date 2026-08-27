@@ -298,7 +298,7 @@ async def main() -> int:
 
     store3 = Store(db, flush_interval=0.3)
     assert store3.open()
-    app3 = MeshTUI(demo=False, store=store3)
+    app3 = MeshTUI(demo=False, store=store3, protocol="meshtastic")
     async with app3.run_test(size=(160, 48)) as pilot3:
         await pilot3.pause(1.5)
         st3 = app3.state
@@ -320,7 +320,7 @@ async def main() -> int:
     # --- observations must not carry over between radios ---
     store4 = Store(db, flush_interval=0.3)
     assert store4.open()
-    app4 = MeshTUI(demo=False, store=store4)
+    app4 = MeshTUI(demo=False, store=store4, protocol="meshtastic")
     async with app4.run_test(size=(160, 48)) as pilot4:
         await pilot4.pause(1.0)
         inherited = len([n for n in app4.state.nodes.values() if n.snr_history])
