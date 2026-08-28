@@ -1,0 +1,105 @@
+"""Pop-out chat overlay and corner pane, driven by real key presses.
+
+Covers the things most likely to break: switching channels stays in sync
+between the two views, messages route to the right conversation, unread counts
+track, and neither input can transmit on the wrong path.
+"""
+
+import asyncio
+import sys
+import time
+
+from meshtui.app import MeshTUI
+from meshtui.model import ChatMessage
+from meshtui.widgets.chat import ChatPane
+from meshtui.widgets.chat_overlay import ChatScreen
+
+failures = []
+
+
+def check(name, got, want):
+    if got == want:
+        print(f"  ok   {name}")
+    else:
+        print(f"  FAIL {name}: got {got!r}, want {want!r}")
+        failures.append(name)
+
+
+class Spy:
+    def __init__(self):
+        self.sent = []
+    def send_text(self, text, dest="^all", channel=0):
+        self.sent.append((text, dest, channel)); return (True, 1)
+    def stop(self): pass
+
+
+async def main():
+    app = MeshTUI(demo=True, store=None, protocol="meshtastic")
+    async with app.run_test(size=(150, 40)) as pilot:
+        await asyncio.sleep(2)
+        st = app.state
+        spy = Spy(); app.link = spy; st.connected = True
+        st.channels = [(0, "Public"), (1, "#weather"), (5, "#ops")]
+        st.protocol = "meshcore"
+        app.query_one(ChatPane).set_channels(st)
+        now = time.time()
+        for ch, name, txt in ((1, "Solar", "storms rolling in"),
+                              (5, "Ops", "repeater rebooted")):
+            st.add_chat(ChatMessage(ts=now, from_id="!a" + str(ch), from_name=name,
+                                    to_id="^all", text=txt, channel=ch))
+
+        print("corner pane")
+        st.active_target = ("channel", 1)
+        app.query_one(ChatPane).rerender(st)
+        check("corner shows channel label", app.query_one(ChatPane).active_target(),
+              ("channel", 1))
+
+        # a message on channel 5 while viewing channel 1 -> unread
+        st.note_incoming(ChatMessage(ts=now, from_id="!x", from_name="Z",
+                                     to_id="^all", text="ping", channel=5))
+        check("unread tracked for other channel", st.unread.get(("channel", 5)), 1)
+
+        print("\\nopen overlay with z")
+        await pilot.press("z"); await pilot.pause(0.5)
+        check("overlay opened", isinstance(app.screen, ChatScreen), True)
+        overlay = app.screen
+        check("overlay starts on the corner's channel", st.active_target, ("channel", 1))
+
+        # sidebar has All + 3 channels
+        check("sidebar target count", len(overlay._targets), 4)
+        check("first is All activity", overlay._targets[0], ("all",))
+
+        print("\\nswitching channel in the overlay")
+        overlay._select_row(2)  # ("channel", 1) is row 2 (all, ch0, ch1)
+        check("selecting row updates shared target", st.active_target, ("channel", 1))
+        overlay._select_row(3)  # ("channel", 5)
+        check("moved to ops channel", st.active_target, ("channel", 5))
+        check("viewing a channel clears its unread", st.unread.get(("channel", 5)), 0)
+
+        print("\\nsending from the overlay goes to the active channel")
+        inp = overlay.query_one("#ov-input")
+        inp.focus(); await pilot.pause(0.2)
+        inp.value = "hello ops"
+        await pilot.press("enter"); await pilot.pause(0.3)
+        check("sent to channel 5", spy.sent[-1], ("hello ops", "^all", 5))
+
+        print("\\nover-limit message is refused, nothing transmitted")
+        before = len(spy.sent)
+        inp.value = "x" * (app.max_payload + 20)
+        await pilot.press("enter"); await pilot.pause(0.3)
+        check("over-limit not sent from overlay", len(spy.sent), before)
+
+        print("\\ncorner and overlay stay in sync")
+        await pilot.press("escape"); await pilot.pause(0.3)
+        check("overlay closed", isinstance(app.screen, ChatScreen), False)
+        check("corner reflects the channel chosen in the overlay",
+              app.query_one(ChatPane).active_target(), ("channel", 5))
+
+    if failures:
+        print(f"\\nFAIL: {len(failures)}: {', '.join(failures)}")
+        return 1
+    print("\\nPASS")
+    return 0
+
+
+sys.exit(asyncio.run(main()))

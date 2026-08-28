@@ -58,9 +58,11 @@ ChatPane {
     border-title-align: left;
 }
 
-#chat-tabs {
-    height: 2;
-    margin: 0 1;
+#chat-channel {
+    height: 1;
+    padding: 0 1;
+    background: $boost;
+    color: $text;
 }
 
 #chat-log {
@@ -285,3 +287,52 @@ ChannelScreen { background: $surface; }
 }
 
 #chan-input:focus { background: $boost; }
+
+/* ---- pop-out chat overlay ---- */
+ChatScreen { background: $surface; }
+
+#ov-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#ov-main { height: 1fr; }
+
+#ov-side { width: 26; }
+
+#ov-list {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    background: $surface;
+    scrollbar-size-vertical: 1;
+}
+
+#ov-list > ListItem {
+    padding: 0 1;
+}
+
+#ov-list > ListItem.--highlight {
+    background: $accent 35%;
+}
+
+#ov-right { width: 1fr; }
+
+#ov-log {
+    height: 1fr;
+    border: round $primary;
+    border-title-align: left;
+    padding: 0 2;
+    scrollbar-size-vertical: 1;
+}
+
+#ov-input {
+    height: 3;
+    border: round $primary-darken-2;
+    background: $surface;
+    padding: 0 1;
+}
+
+#ov-input:focus { background: $boost; }

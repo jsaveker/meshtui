@@ -147,6 +147,42 @@ is how you announce yourself so peers can message *you*. Contacts only appear as
 peers advertise, so a new node stays empty for a while — trigger an advert from the
 other device to speed it up.
 
+## Chat
+
+Chat lives in two places. The **corner pane** (bottom right) is the quick glance
+— one conversation, with a `#channel ▾` button showing what you are looking at
+and the total unread count. Press **`z`** (or click the button) to expand it.
+
+The **pop-out overlay** is where you actually read and write: channels down the
+left, a full-width conversation on the right.
+
+```
+  chat  -  #weather   (7 nodes, meshcore)   esc to close
+╭─ channels ─────────────╮╭─ #weather ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ★ All activity         ││  OZTX v4   19:39                                                                                                         │
+│ # Public               ││    Lunar eclipse tonight! clear skies out west                                                                           │
+│ # weather              ││                                                                                                                          │
+│ # wx  1                ││  SolarNerd   19:47                                                                                                       │
+│ # wardriving           ││    getting dark, we may get smacked                                                                                      │
+│ # licensed             ││    anyone north of 290 seeing this yet?                                                                                  │
+│ # backontheroof        ││                                                                                                                          │
+│                        ││  you   19:48  ✓                                                                                                          │
+│                        ││    copy, battening down here                                                                                             │
+│                        ││                                                                                                                          │
+│                        ││  Picassoman-B   19:48                                                                                                    │
+│                        ││    smells great though                                                                                                   │
+```
+
+- **Channels and DMs down the left**, with unread counts — no more tab overflow.
+  `↑`/`↓` to move, or `[` and `]` from anywhere.
+- **`★ All activity`** merges every channel into one stream, each line tagged with
+  its channel — the best way to watch a busy mesh, then dive into one to reply.
+- **Messages are grouped** by sender: name and time once, the body indented and
+  wrapped with room. Your own messages show a delivery tick (`✓` acked, `··`
+  pending).
+- The corner pane and the overlay share the same selection, so switching a channel
+  in one moves the other. `esc` closes the overlay.
+
 ## Channels (`c`)
 
 A MeshCore radio has a fixed set of channel slots — 40 on current firmware — and
@@ -341,6 +377,8 @@ so `meshtui` would only run after you exit it, back in the original shell.)
 | `?` | key reference overlay |
 | `tab` | switch pane |
 | `/` | focus the message box |
+| `z` | expand chat to the full-screen overlay |
+| `[` `]` | previous / next channel |
 | `escape` | leave the message box / close an overlay |
 | `enter` | node detail, or inspect the selected packet |
 | `i` | inspect the selected packet |

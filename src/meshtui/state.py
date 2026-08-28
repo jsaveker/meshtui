@@ -127,6 +127,13 @@ class MeshState:
         # is not the channel number.
         self.channels: list = []
         self.max_channels: int = 8
+        # What the chat views are currently showing, shared so the corner pane
+        # and the pop-out overlay stay in sync: ("all",), ("channel", index)
+        # or ("dm", node_id).
+        self.active_target: tuple = ("channel", 0)
+        # DMs we have a conversation with, and unread counts per target.
+        self.dm_contacts: set[str] = set()
+        self.unread: Counter = Counter()
         self.local_channels: list[LocalChannel] = []
         self.foreign_channels: dict[int, ForeignChannel] = {}
         self.relays: dict[int, RelayStat] = {}
@@ -437,6 +444,60 @@ class MeshState:
         return None
 
     # ---------------------------------------------------------------- misc
+
+    def channel_pairs(self) -> list[tuple[int, str]]:
+        """Channels as (index, name), from either representation."""
+        pairs: list[tuple[int, str]] = []
+        for item in self.channels:
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                pairs.append((int(item[0]), str(item[1])))
+            else:
+                pairs.append((len(pairs), str(item)))
+        return pairs
+
+    def target_key(self, message: ChatMessage) -> tuple:
+        """Which conversation a message belongs to."""
+        if message.is_dm:
+            other = message.to_id if message.outgoing else message.from_id
+            return ("dm", other)
+        return ("channel", int(message.channel))
+
+    def target_label(self, target: tuple) -> str:
+        kind = target[0]
+        if kind == "all":
+            return "all activity"
+        if kind == "dm":
+            return f"@{self.node_name(target[1])}"
+        name = self.channel_name(int(target[1]))
+        # MeshCore channel names already start with '#'; don't double it.
+        return name if name.startswith("#") else f"#{name}"
+
+    def messages_for(self, target: tuple) -> list[ChatMessage]:
+        kind = target[0]
+        if kind == "all":
+            return list(self.chat)
+        if kind == "dm":
+            node = target[1]
+            return [m for m in self.chat
+                    if m.is_dm and node in (m.from_id, m.to_id)]
+        index = int(target[1])
+        return [m for m in self.chat if not m.is_dm and m.channel == index]
+
+    def mark_read(self, target: tuple) -> None:
+        self.unread[target] = 0
+
+    def note_incoming(self, message: ChatMessage) -> tuple:
+        """Record a received message's unread count. Returns its target key.
+
+        A message for the target already on screen is considered read; the
+        caller passes active_target, so this stays correct whether the overlay
+        or the corner pane is the visible view.
+        """
+        key = self.target_key(message)
+        if not message.outgoing and key != self.active_target \
+                and self.active_target[0] != "all":
+            self.unread[key] += 1
+        return key
 
     def channel_name(self, index: int) -> str:
         for item in self.channels:

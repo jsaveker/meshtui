@@ -11,7 +11,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Input, Static, Tabs
+from textual.widgets import DataTable, Footer, Input, Static
 
 from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
 from .meshcore_link import MeshCoreLink, contact_to_node, probe_meshcore
@@ -22,7 +22,8 @@ from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.admin import AdminScreen
 from .widgets.audit import AuditScreen
 from .widgets.channels import ChannelScreen
-from .widgets.chat import ChatPane, LeaveChat
+from .widgets.chat import ChatPane, LeaveChat, OpenChatOverlay
+from .widgets.chat_overlay import ChatScreen
 from .widgets.detail import NodeDetail
 from .widgets.help import HelpScreen
 from .widgets.inspect import PacketInspector
@@ -72,6 +73,7 @@ class MeshTUI(App[None]):
         Binding("q", "quit", "quit"),
         Binding("question_mark,f1", "help", "help", key_display="?"),
         Binding("slash", "focus_input", "chat", key_display="/"),
+        Binding("z", "expand_chat", "expand chat"),
         Binding("p", "toggle_pause", "pause feed"),
         Binding("f", "cycle_filter", "filter"),
         Binding("s", "cycle_sort", "sort"),
@@ -489,9 +491,8 @@ class MeshTUI(App[None]):
             self.state.radio_info["autoadd"] = payload
         elif kind == "mc_channels":
             self.state.channels = list(payload) or [(0, "Public")]
-            self.run_worker(
-                self.query_one(ChatPane).set_channels(self.state.channels),
-                name="chat-tabs")
+            self.query_one(ChatPane).set_channels(self.state)
+            self._refresh_overlay()
         elif kind == "mc_login":
             node_id, ok = payload
             if ok:
@@ -597,15 +598,27 @@ class MeshTUI(App[None]):
         self.state.add_chat(message)
         if self.store is not None:
             self.store.add_message(message)
+        # A received DM opens a conversation with its sender.
+        if message.is_dm and not message.outgoing:
+            self.state.dm_contacts.add(message.from_id)
+        self.state.note_incoming(message)
         chat = self.query_one(ChatPane)
-        if message.is_dm and message.to_id == self.state.my_node_id:
-            self.run_worker(
-                chat.ensure_dm_tab(message.from_id, self.state.node_name(message.from_id)),
-                name="dm-tab",
-            )
         if not chat.add(message, self.state):
-            self.note(f"new message from {message.from_name}", "bright_green")
-        self.bell()
+            # Not the conversation on screen; keep the corner button's unread
+            # tally current and announce it.
+            chat.rerender(self.state)
+            if not message.outgoing:
+                self.note(f"new message from {message.from_name}", "bright_green")
+        self._refresh_overlay()
+        if not message.outgoing:
+            self.bell()
+
+    def _refresh_overlay(self) -> None:
+        """Keep the pop-out in step when it happens to be open."""
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            screen.rebuild_list()
+            screen.render_conversation()
 
     def _on_connected(self, info: dict[str, Any]) -> None:
         self.state.connected = True
@@ -645,10 +658,7 @@ class MeshTUI(App[None]):
             except (ValueError, AttributeError):
                 pass
         self._restore_for_observer()
-        self.run_worker(
-            self.query_one(ChatPane).set_channels(self.state.channels),
-            name="chat-tabs",
-        )
+        self.query_one(ChatPane).set_channels(self.state)
         self.note("connected", "green")
 
     # ------------------------------------------------------------ refresh
@@ -758,14 +768,23 @@ class MeshTUI(App[None]):
         self.link.send_advert(flood=True)
 
     def action_next_channel(self) -> None:
-        self.query_one(ChatPane).cycle(1)
+        self.query_one(ChatPane).cycle(1, self.state)
+        self._refresh_overlay()
 
     def action_prev_channel(self) -> None:
-        self.query_one(ChatPane).cycle(-1)
+        self.query_one(ChatPane).cycle(-1, self.state)
+        self._refresh_overlay()
+
+    def action_expand_chat(self) -> None:
+        if not isinstance(self.screen, ChatScreen):
+            self.push_screen(ChatScreen(self.state, self))
+
+    def on_open_chat_overlay(self, event: OpenChatOverlay) -> None:
+        self.action_expand_chat()
 
     def goto_channel(self, index: int) -> None:
         """Jump the chat pane to a channel, used by the channel browser."""
-        if self.query_one(ChatPane).goto_channel(index):
+        if self.query_one(ChatPane).goto_channel(index, self.state):
             self.note(f"switched to {self.state.channel_name(index)}", "grey70")
         else:
             self.note(f"channel {index} is not on this radio", "yellow")
@@ -790,7 +809,7 @@ class MeshTUI(App[None]):
             self.note("select a node first", "yellow")
             return
         chat = self.query_one(ChatPane)
-        self.run_worker(chat.focus_dm(node.node_id, node.label), name="dm-tab")
+        chat.focus_dm(node.node_id, self.state)
         self.query_one("#chat-input", Input).focus()
 
     def action_trace_selected(self) -> None:
@@ -833,15 +852,6 @@ class MeshTUI(App[None]):
         elif isinstance(event.data_table, NodeTable):
             self.action_node_detail()
 
-    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
-        chat = self.query_one(ChatPane)
-        chat.rerender(self.state)
-        kind, target = chat.active_target()
-        if kind == "dm":
-            chat.set_title(f"chat - dm {self.state.node_name(str(target))}")
-        else:
-            chat.set_title(f"chat - #{self.state.channel_name(int(target))}")  # type: ignore[arg-type]
-
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "chat-input":
             self.query_one(ChatPane).update_counter(event.value)
@@ -852,13 +862,30 @@ class MeshTUI(App[None]):
         # those as chat would broadcast them to the mesh.
         if event.input.id != "chat-input":
             return
-        text = event.value.strip()
-        if not text:
-            return
+        if self._submit_chat(event.value):
+            event.input.value = ""
+            self.query_one(ChatPane).update_counter("")
 
-        # Meshtastic caps a packet's data payload; refuse rather than let the
-        # radio reject it after the message has already been shown as sent.
+    @property
+    def max_payload(self) -> int:
+        return self.query_one(ChatPane).max_bytes
+
+    def send_from_overlay(self, text: str) -> bool:
+        """Send path for the pop-out overlay's input."""
+        return self._submit_chat(text)
+
+    def _submit_chat(self, raw: str) -> bool:
+        """Handle a line of chat input. Returns True if it was consumed.
+
+        The single entry point for both the corner input and the overlay, so
+        the length limit, slash commands and the send destination behave
+        identically wherever a message is typed.
+        """
+        text = raw.strip()
+        if not text:
+            return False
         chat = self.query_one(ChatPane)
+
         payload = outgoing_payload(text)
         if payload is not None:
             used = payload_bytes(payload)
@@ -870,16 +897,16 @@ class MeshTUI(App[None]):
                     "bold red",
                 )
                 self.note(f"too long: {used}/{limit} bytes", "red")
-                return  # text stays in the box so it can be edited
+                return False  # keep the text so it can be trimmed
 
-        event.input.value = ""
-        chat.update_counter("")
         if text.startswith("/"):
             self._command(text)
-        else:
-            kind, target = self.active_chat_target()
-            self._send(text, target if kind == "dm" else BROADCAST,
-                       0 if kind == "dm" else int(target))  # type: ignore[arg-type]
+            return True
+
+        kind, target = self.active_chat_target()
+        self._send(text, target if kind == "dm" else BROADCAST,
+                   0 if kind == "dm" else int(target))  # type: ignore[arg-type]
+        return True
 
     def active_chat_target(self) -> tuple[str, Any]:
         return self.query_one(ChatPane).active_target()
@@ -907,7 +934,7 @@ class MeshTUI(App[None]):
             if node is None:
                 chat.notice(f"  unknown node: {parts[1]}", "yellow")
                 return
-            self.run_worker(chat.focus_dm(node.node_id, node.label), name="dm-tab")
+            chat.focus_dm(node.node_id, self.state)
             self._send(parts[2], node.node_id, 0)
         elif cmd == "/trace":
             if len(parts) < 2:
@@ -952,4 +979,9 @@ class MeshTUI(App[None]):
         if self.store is not None:
             self.store.add_message(message)
         self.state.stats.sent += 1
-        self.query_one(ChatPane).add(message, self.state)
+        if message.is_dm:
+            self.state.dm_contacts.add(dest)
+        chat = self.query_one(ChatPane)
+        if not chat.add(message, self.state):
+            chat.rerender(self.state)
+        self._refresh_overlay()

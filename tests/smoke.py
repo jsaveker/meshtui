@@ -72,11 +72,24 @@ async def main() -> int:
         if not any(m.outgoing and m.is_dm for m in app.state.chat):
             problems.append("/dm did not send a direct message")
 
-        # channel tab switching
+        # channel switching via the shared target, and the pop-out overlay
         chat = app.query_one(ChatPane)
-        for tab_id in ("ch1", "ch2", "ch0"):
-            chat.tabs.active = tab_id
+        for index in (1, 2, 0):
+            chat.goto_channel(index, app.state)
             await pilot.pause(0.2)
+        if chat.active_target() != ("channel", 0):
+            problems.append("channel switching did not update the active target")
+        # z is a text character while the chat input has focus; leave it first,
+        # exactly as a user would, before using the single-key binding.
+        app.query_one(NodeTable).focus()
+        await pilot.pause(0.2)
+        await pilot.press("z"); await pilot.pause(0.4)
+        from meshtui.widgets.chat_overlay import ChatScreen
+        if not isinstance(app.screen, ChatScreen):
+            problems.append("z did not open the chat overlay")
+        await pilot.press("escape"); await pilot.pause(0.3)
+        if isinstance(app.screen, ChatScreen):
+            problems.append("escape did not close the chat overlay")
 
         # --- escape out of the chat input ---
         await pilot.press("slash"); await pilot.pause()

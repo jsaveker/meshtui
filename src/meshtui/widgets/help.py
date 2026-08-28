@@ -14,6 +14,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     ("getting around", [
         ("tab / shift+tab", "move between panes"),
         ("/", "jump to the message box"),
+        ("z", "expand chat to full screen"),
         ("escape", "leave the message box / close an overlay"),
         ("?", "this help"),
         ("q", "quit"),
