@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from rich.text import Text
@@ -46,6 +47,9 @@ class ChatPane(Vertical):
         super().__init__(**kwargs)
         self._known_dms: set[str] = set()
         self.base_title = "chat"
+        # Rebuilding Tabs is asynchronous; overlapping rebuilds collide on
+        # duplicate tab ids, so only one may run at a time.
+        self._tabs_lock = asyncio.Lock()
         self.max_bytes = DEFAULT_MAX_PAYLOAD   # replaced by the app on mount
 
     def compose(self) -> ComposeResult:
@@ -135,14 +139,24 @@ class ChatPane(Vertical):
         if not pairs:
             pairs = [(0, "LongFast")]
 
-        tabs = self.tabs
-        await tabs.clear()
-        for index, name in pairs:
-            await tabs.add_tab(Tab(name or f"ch{index}", id=f"ch{index}"))
-        for node_id in sorted(self._known_dms):
-            await tabs.add_tab(Tab(f"@{node_id[-4:]}", id=dm_tab_id(node_id)))
-        if pairs:
-            tabs.active = f"ch{pairs[0][0]}"
+        async with self._tabs_lock:
+            tabs = self.tabs
+            await tabs.clear()
+            seen: set[str] = set()
+            for index, name in pairs:
+                tab_id = f"ch{index}"
+                if tab_id in seen:
+                    continue
+                seen.add(tab_id)
+                await tabs.add_tab(Tab(name or tab_id, id=tab_id))
+            for node_id in sorted(self._known_dms):
+                tab_id = dm_tab_id(node_id)
+                if tab_id in seen:
+                    continue
+                seen.add(tab_id)
+                await tabs.add_tab(Tab(f"@{node_id[-4:]}", id=tab_id))
+            if pairs:
+                tabs.active = f"ch{pairs[0][0]}"
 
     async def ensure_dm_tab(self, node_id: str, label: str) -> str:
         tab_id = dm_tab_id(node_id)
@@ -153,6 +167,27 @@ class ChatPane(Vertical):
 
     async def focus_dm(self, node_id: str, label: str) -> None:
         self.tabs.active = await self.ensure_dm_tab(node_id, label)
+
+    def cycle(self, step: int) -> str | None:
+        """Move to the next/previous tab. With many channels the bar overflows,
+        so this is the practical way to move between them."""
+        ids = [t.id for t in self.tabs.query(Tab) if t.id]
+        if not ids:
+            return None
+        try:
+            here = ids.index(self.tabs.active)
+        except ValueError:
+            here = 0
+        target = ids[(here + step) % len(ids)]
+        self.tabs.active = target
+        return target
+
+    def goto_channel(self, index: int) -> bool:
+        tab_id = f"ch{index}"
+        if any(t.id == tab_id for t in self.tabs.query(Tab)):
+            self.tabs.active = tab_id
+            return True
+        return False
 
     # ------------------------------------------------------------ rendering
 

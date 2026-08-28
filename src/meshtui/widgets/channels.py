@@ -83,19 +83,24 @@ class ChannelScreen(Screen[None]):
 
     # -------------------------------------------------------------- content
 
-    def refresh_table(self) -> None:
-        table = self.query_one("#chan-table", DataTable)
-        keep = table.cursor_row
-        table.clear()
-        self._rows = []
-
+    def _used_slots(self) -> dict[int, str]:
+        """slot index -> name, tolerating both (index, name) pairs and a bare
+        positional list of names."""
         used: dict[int, str] = {}
         for item in self.state.channels:
             if isinstance(item, (tuple, list)) and len(item) == 2:
                 used[int(item[0])] = str(item[1])
             else:
                 used[len(used)] = str(item)
+        return used
 
+    def refresh_table(self) -> None:
+        table = self.query_one("#chan-table", DataTable)
+        keep = table.cursor_row
+        table.clear()
+        self._rows = []
+
+        used = self._used_slots()
         secrets = getattr(self.link, "channel_secrets", {}) or {}
         total = max(self.state.max_channels, (max(used) + 1) if used else 1)
         for index in range(total):
@@ -137,6 +142,17 @@ class ChannelScreen(Screen[None]):
         self.query_one("#chan-log", RichLog).write(Text(text, style=style))
 
     # -------------------------------------------------------------- actions
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter on a slot switches the chat pane to it and closes."""
+        if not self._rows or not (0 <= event.cursor_row < len(self._rows)):
+            return
+        index = self._rows[event.cursor_row]
+        if index not in self._used_slots():
+            self._say(f"slot {index} is empty - add a channel first", "yellow")
+            return
+        self.dismiss(None)
+        self.app.goto_channel(index)
 
     def action_refresh(self) -> None:
         if hasattr(self.link, "_submit") and hasattr(self.link, "_load_channels"):

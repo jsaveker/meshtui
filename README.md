@@ -165,6 +165,10 @@ message is addressed to.
  ╰──────────────────────────────────╯╰────────────────────────────────────╯
 ```
 
+With more than a handful of channels the tab bar overflows the pane. `[` and `]`
+step between channels from anywhere, and pressing enter on a row in this screen
+jumps the chat straight to that channel.
+
 Keys work two ways. A name starting with `#` derives its key from
 `sha256(name)[:16]`, so anyone who knows the name can join — that is how public
 channels are shared. Supply an explicit 32-hex-character key instead for a private
@@ -331,7 +335,8 @@ so `meshtui` would only run after you exit it, back in the original shell.)
 | `i` | inspect the selected packet |
 | `m` | open the map |
 | `a` | channel security audit |
-| `c` | browse and edit channels |
+| `c` | browse and edit channels; enter jumps to one |
+| `[` `]` | previous / next channel |
 | `r` | relay dependency and mesh health |
 | `w` | sensors: environment and air quality |
 | `p` | pause / resume the packet feed |

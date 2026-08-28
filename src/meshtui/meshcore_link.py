@@ -254,7 +254,7 @@ class MeshCoreLink(RadioLink):
             pass
         # Channels first: announcing with an empty list and then filling it in
         # would leave two concurrent Tabs rebuilds racing each other.
-        await self._load_channels()
+        await self._load_channels(announce=False)
         await self._announce()
         await self._load_contacts()
         await self._check_autoadd()
@@ -487,7 +487,7 @@ class MeshCoreLink(RadioLink):
                       "advert and never learns anyone's public key. Direct messages "
                       "to it cannot be decrypted and will fail. Press 'A' to enable it.")
 
-    async def _load_channels(self) -> None:
+    async def _load_channels(self, announce: bool = True) -> None:
         """Read every channel slot the device has.
 
         Slots are not contiguous - a device can have channels at 0, 5 and 12 -
@@ -510,7 +510,10 @@ class MeshCoreLink(RadioLink):
             found.append((index, name or f"channel {index}"))
             self.channel_secrets[index] = secret
         self.channels = found or [(0, "Public")]
-        self.emit("mc_channels", list(self.channels))
+        # The initial load must not emit: the connect payload already carries
+        # these, and two concurrent tab rebuilds collide on duplicate ids.
+        if announce:
+            self.emit("mc_channels", list(self.channels))
 
     # ------------------------------------------------------------- commands
 

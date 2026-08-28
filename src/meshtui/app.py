@@ -67,6 +67,10 @@ class MeshTUI(App[None]):
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
         Binding("tab", "focus_next", "switch pane"),
+        Binding("right_square_bracket", "next_channel", "next channel",
+                key_display="]"),
+        Binding("left_square_bracket", "prev_channel", "prev channel",
+                key_display="["),
     ]
 
     def __init__(self, port: str | None = None, demo: bool = False,
@@ -685,6 +689,19 @@ class MeshTUI(App[None]):
             self.note("MeshCore only", "yellow")
             return
         self.link.send_advert(flood=True)
+
+    def action_next_channel(self) -> None:
+        self.query_one(ChatPane).cycle(1)
+
+    def action_prev_channel(self) -> None:
+        self.query_one(ChatPane).cycle(-1)
+
+    def goto_channel(self, index: int) -> None:
+        """Jump the chat pane to a channel, used by the channel browser."""
+        if self.query_one(ChatPane).goto_channel(index):
+            self.note(f"switched to {self.state.channel_name(index)}", "grey70")
+        else:
+            self.note(f"channel {index} is not on this radio", "yellow")
 
     def action_show_channels(self) -> None:
         self.push_screen(ChannelScreen(self.state, self.link))
