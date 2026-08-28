@@ -63,6 +63,13 @@ class AdminScreen(Screen[None]):
         self.link = link
         self.target: str | None = None
         self._seen = 0
+        # Nodes we have sent a login to but not yet heard an ack from. A login
+        # travels back over LoRa and can take 30s, so the UI must distinguish
+        # "waiting for the ack" from "not logged in".
+        self._login_pending: set[str] = set()
+        # True while _refresh_nodes is programmatically moving the cursor, so
+        # the highlight handler does not mistake that for a user selection.
+        self._refreshing = False
 
     # -------------------------------------------------------------- layout
 
@@ -101,22 +108,34 @@ class AdminScreen(Screen[None]):
         return admin + other
 
     def _refresh_nodes(self) -> None:
+        # Selection follows the node id, not the row index: this table is
+        # rebuilt every second and reorders as contacts arrive, so pinning to a
+        # row would silently move the selection - and drop an admin session.
         table = self.query_one("#admin-nodes", DataTable)
-        keep = table.cursor_row
-        table.clear()
-        self._rows: list[str] = []
-        for node in self._candidates():
-            authed = node.node_id in self.state.admin_sessions
-            table.add_row(
-                Text("*" if authed else " ",
-                     style="bold bright_green" if authed else "grey42"),
-                Text(node.name[:22],
-                     style="bright_white" if node.role in ("REPEATER", "ROOM") else "grey62"),
-                Text(node.role[:8] or "-", style="cyan"),
-            )
-            self._rows.append(node.node_id)
-        if self._rows:
-            table.move_cursor(row=min(max(keep, 0), len(self._rows) - 1))
+        self._refreshing = True
+        try:
+            table.clear()
+            self._rows: list[str] = []
+            for node in self._candidates():
+                authed = node.node_id in self.state.admin_sessions
+                table.add_row(
+                    Text("*" if authed else " ",
+                         style="bold bright_green" if authed else "grey42"),
+                    Text(node.name[:22],
+                         style="bright_white" if node.role in ("REPEATER", "ROOM")
+                         else "grey62"),
+                    Text(node.role[:8] or "-", style="cyan"),
+                )
+                self._rows.append(node.node_id)
+            if self._rows:
+                if self.target in self._rows:
+                    row = self._rows.index(self.target)
+                else:
+                    row = 0
+                    self.target = self._rows[0]
+                table.move_cursor(row=row)
+        finally:
+            self._refreshing = False
 
     def _render_hints(self) -> None:
         text = Text()
@@ -131,6 +150,7 @@ class AdminScreen(Screen[None]):
     def _render_status(self) -> None:
         target = self.state.node_name(self.target) if self.target else "no node selected"
         authed = self.target in self.state.admin_sessions if self.target else False
+        pending = self.target in self._login_pending if self.target else False
         line = Text()
         line.append(" remote admin  ", style="grey62")
         line.append(target, style="bold bright_white")
@@ -139,6 +159,9 @@ class AdminScreen(Screen[None]):
             line.append("pick a repeater on the left", style="grey42")
         elif authed:
             line.append("authenticated", style="bold bright_green")
+        elif pending:
+            line.append("logging in - waiting for the ack (LoRa, up to 30s)...",
+                        style="bold yellow")
         else:
             line.append("not logged in - type: login <password>", style="yellow")
         self.query_one("#admin-status", Static).update(line)
@@ -157,12 +180,18 @@ class AdminScreen(Screen[None]):
             line.append(text, style="white")
             log.write(line)
         self._seen = len(entries)
+        # A login that landed clears its pending flag.
+        self._login_pending -= self.state.admin_sessions
         self._refresh_nodes()
         self._render_status()
 
     # -------------------------------------------------------------- actions
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        # Ignore the highlight that our own refresh causes; only a real user
+        # cursor move should change the selected node.
+        if self._refreshing:
+            return
         if getattr(self, "_rows", None) and 0 <= event.cursor_row < len(self._rows):
             self.target = self._rows[event.cursor_row]
             self._render_status()
@@ -188,13 +217,20 @@ class AdminScreen(Screen[None]):
 
         if text.lower().startswith("login "):
             password = text.split(" ", 1)[1]
-            log.write(Text(f"> login to {name} ...", style="bright_cyan"))
+            self._login_pending.add(self.target)
+            log.write(Text(f"> login to {name} - waiting for the ack "
+                           f"(can take 30s over LoRa)...", style="bright_cyan"))
             # Never the password itself, in the log or on disk.
             self.app.record_admin(self.target, "> login")
             self.link.login(self.target, password)
+            self._render_status()
             return
         if self.target not in self.state.admin_sessions:
-            log.write(Text("not authenticated - run: login <password>", style="yellow"))
+            if self.target in self._login_pending:
+                log.write(Text("still waiting for the login ack - LoRa can take 30s; "
+                               "the status line shows when it lands", style="yellow"))
+            else:
+                log.write(Text("not authenticated - run: login <password>", style="yellow"))
             return
 
         log.write(Text(f"> {text}", style="bright_cyan"))
