@@ -79,7 +79,8 @@ class PacketFeed(DataTable):
     def selected_packet(self) -> Packet | None:
         if not self._rows or not (0 <= self.cursor_row < len(self._rows)):
             return None
-        return self._rows[self.cursor_row]
+        row = self._rows[self.cursor_row]
+        return row if isinstance(row, Packet) else None
 
     # --------------------------------------------------------------- content
 
@@ -125,23 +126,37 @@ class PacketFeed(DataTable):
         self._pending.clear()
 
     def on_resize(self) -> None:
-        # Lines are padded to the pane width so the row cursor spans it.
-        if self._rows:
-            packets = list(self._rows)
-            self.clear()
-            self._rows = []
-            for pkt in packets:
-                self._write_line(pkt, self.app.state)  # type: ignore[attr-defined]
+        # Packet lines are padded to the pane width, so a resize re-renders
+        # them. Rows are either a Packet or a notice's Text; only packets are
+        # re-laid-out, notices are re-added verbatim.
+        if not self._rows:
+            return
+        rows = list(self._rows)
+        self.clear()
+        self._rows = []
+        state = self.app.state  # type: ignore[attr-defined]
+        for row in rows:
+            if isinstance(row, Packet):
+                self._write_line(row, state)
+            else:
+                self._readd_notice(row)
 
     def write_notice(self, text: str, style: str = "grey62") -> None:
-        """Put a non-packet line in the feed (errors, status)."""
-        self._seq += 1
-        self.add_row(Text(text, style=style, no_wrap=True), key=f"n{self._seq}")
-        self._rows.append(None)  # type: ignore[arg-type]
+        """Put a non-packet line in the feed (errors, status, traceroute)."""
+        self._readd_notice(Text(text, style=style, no_wrap=True))
         if self.follow:
             self.move_cursor(row=len(self._rows) - 1)
 
+    def _readd_notice(self, renderable: Text) -> None:
+        self._seq += 1
+        self.add_row(renderable, key=f"n{self._seq}")
+        # Store the renderable itself, not None, so a resize can rebuild it and
+        # so selected_packet can tell notices from packets.
+        self._rows.append(renderable)
+
     def _write_line(self, packet: Packet, state: MeshState) -> None:
+        if packet is None:  # notice rows are re-added elsewhere
+            return
         label, colour = port_label(packet.portnum)
         line = Text(no_wrap=True, overflow="ellipsis")
         line.append(time.strftime("%H:%M:%S", time.localtime(packet.ts)), style="grey42")
