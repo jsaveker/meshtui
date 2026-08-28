@@ -202,6 +202,12 @@ Select a repeater, type `login <password>`, then send commands. `F2` requests
 status, `F3` telemetry, `F4` logs out. Replies travel over LoRa, so they take
 seconds and can be lost — the session log shows exactly what came back.
 
+A remote command and its reply are ordinary text messages tagged
+`TxtType.CLI_DATA`; that tag is the only thing separating a repeater's console
+output from someone messaging you. `CLI_REPLY` is a different event entirely — it
+belongs to the *local* device's console — so a reply that is not checked for its
+tag silently lands in the chat pane instead of the admin session.
+
 ## Quick start
 
 Try it with no radio attached:

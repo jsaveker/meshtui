@@ -139,6 +139,31 @@ check("colons tolerated", parse_secret("00:11:22:33:44:55:66:77:88:99:aa:bb:cc:d
 check("wrong length rejected", parse_secret("00112233"), None)
 check("non-hex rejected", parse_secret("z" * 32), None)
 
+print("\nrepeater console output is not chat")
+# send_cmd travels as a text message tagged CLI_DATA, and so does the reply -
+# the tag is the only thing separating console output from someone saying hello.
+emitted.clear()
+link._admin_target = "!2935ec59"
+link._on_direct_message(event({"pubkey_prefix": KEY, "txt_type": 1,
+                               "text": "v1.17.1-d929643 (Build: 14-Aug-2026)"}))
+kinds2 = [k for k, _ in emitted]
+check("cli reply does not become chat", "chat" in kinds2, False)
+check("cli reply reaches the admin log", "mc_cli" in kinds2, True)
+check("cli text preserved", emitted[0][1][1], "v1.17.1-d929643 (Build: 14-Aug-2026)")
+check("cli reply labelled as admin traffic",
+      next(p for k, p in emitted if k == "packet").portnum, "ADMIN_APP")
+
+emitted.clear()
+link._on_direct_message(event({"pubkey_prefix": KEY, "txt_type": 3, "text": "ver"}))
+check("an echoed CLI_CMD is also not chat", [k for k, _ in emitted][0], "mc_cli")
+
+emitted.clear()
+link._on_direct_message(event({"pubkey_prefix": KEY, "txt_type": 0, "text": "hello"}))
+check("a plain direct message is still chat", [k for k, _ in emitted][0], "chat")
+emitted.clear()
+link._on_direct_message(event({"pubkey_prefix": KEY, "text": "no txt_type"}))
+check("a message with no txt_type is still chat", [k for k, _ in emitted][0], "chat")
+
 print("\nadmin replies attribute to the node we addressed")
 # LOGIN_SUCCESS only carries pubkey_prefix on long enough frames, and CLI_REPLY
 # never carries one at all - so a reply must be matched to who we asked.

@@ -36,6 +36,15 @@ log = logging.getLogger(__name__)
 # Contact type values from MeshCore's advert types.
 CONTACT_TYPES = {1: "CHAT", 2: "REPEATER", 3: "ROOM", 4: "SENSOR"}
 
+# meshcore.packets.TxtType. A remote admin command and its reply travel as
+# ordinary text messages tagged with one of these, which is the only thing
+# distinguishing a repeater's console output from someone saying hello.
+TXT_PLAIN = 0
+TXT_CLI_DATA = 1
+TXT_SIGNED_PLAIN = 2
+TXT_CLI_CMD = 3
+TXT_ADMIN = (TXT_CLI_DATA, TXT_CLI_CMD)
+
 # Synthetic port labels so the packet feed can colour MeshCore traffic using
 # the same machinery as Meshtastic portnums.
 PORT_ADVERT = "ADVERT_APP"
@@ -342,6 +351,17 @@ class MeshCoreLink(RadioLink):
         data = self._payload(event)
         node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
         text = data.get("text") or data.get("msg") or ""
+
+        # A repeater's console output arrives as a direct message tagged
+        # CLI_DATA. Without this check it lands in the chat pane as though
+        # someone had messaged you, and never reaches the admin session.
+        if data.get("txt_type") in TXT_ADMIN:
+            target = node_id if node_id != "!00000000" else self._admin_target
+            self.emit("mc_cli", (target or node_id, text))
+            self._packet(PORT_CLI, target or node_id, text[:80],
+                         to_id=self.my_node_id, snr=data.get("snr"), raw=data)
+            return
+
         self.emit("chat", ChatMessage(
             ts=data.get("sender_timestamp") or time.time(),
             from_id=node_id, from_name="", to_id=self.my_node_id, text=text,
