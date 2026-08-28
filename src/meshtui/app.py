@@ -90,10 +90,6 @@ class MeshTUI(App[None]):
         Binding("i", "inspect_packet", "inspect", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
         Binding("tab", "focus_next", "switch pane"),
-        Binding("right_square_bracket", "next_channel", "next channel",
-                key_display="]"),
-        Binding("left_square_bracket", "prev_channel", "prev channel",
-                key_display="["),
     ]
 
     def __init__(self, port: str | None = None, demo: bool = False,
@@ -539,26 +535,26 @@ class MeshTUI(App[None]):
             self.store.add_admin_log(stamp, node_id, safe)
 
     def _show_traceroute(self, packet: Packet) -> None:
-        """Write a readable route, with per-hop signal in both directions."""
+        """Write a readable route to the packet feed, with per-hop signal
+        in both directions."""
         towards, back = traceroute_hops(packet.raw)
         if not towards:
             return
-        chat = self.query_one(ChatPane)
 
         def name(num: int) -> str:
             return self.state.node_name(f"!{num:08x}")
 
         me = self.state.my_node_id or "!me"
-        chat.notice("")
+        feed = self.query_one(PacketFeed)
+        feed.write_notice("", "grey42")
         hops = len(towards) - 1
-        chat.notice(f"  traceroute to {name(packet.raw.get('from', 0))}: "
-                    f"{'DIRECT, no relay' if hops == 0 else f'{hops} hop(s)'}",
-                    "bold bright_cyan")
+        feed.write_notice(
+            f"traceroute to {name(packet.raw.get('from', 0))}: "
+            f"{'DIRECT, no relay' if hops == 0 else f'{hops} hop(s)'}",
+            "bold bright_cyan")
 
         def render(label: str, chain: list, start: str) -> None:
-            # One hop per line: a single-line route truncates badly in a narrow
-            # chat pane, and the per-hop SNR is the point of the exercise.
-            chat.notice(f"    {label:<5} {start}", "grey62")
+            feed.write_notice(f"  {label:<5} {start}", "grey62")
             for num, snr in chain:
                 signal = f"{snr:+.1f}dB" if snr is not None else "     ?"
                 if snr is None:
@@ -569,14 +565,14 @@ class MeshTUI(App[None]):
                     style = "yellow"
                 else:
                     style = "red"
-                chat.notice(f"          {signal:>8}  -> {name(num)}", style)
+                feed.write_notice(f"        {signal:>8}  -> {name(num)}", style)
 
         render("out", towards, self.state.node_name(me) + "  (you)")
         if back:
             render("back", back, name(packet.raw.get("from", 0)))
         else:
-            chat.notice("    (no return path reported)", "grey54")
-        chat.notice("")
+            feed.write_notice("  (no return path reported)", "grey54")
+        feed.write_notice("", "grey42")
 
     def _on_packet(self, packet: Packet) -> None:
         # Make sure every sender exists in the node table, even before its
@@ -704,7 +700,28 @@ class MeshTUI(App[None]):
     # ------------------------------------------------------------ actions
 
     def action_focus_input(self) -> None:
-        self.query_one("#chat-input", Input).focus()
+        self._open_overlay(focus_input=True)
+
+    def _open_overlay(self, focus_input: bool = False) -> None:
+        if isinstance(self.screen, ChatScreen):
+            if focus_input:
+                self.screen.focus_input()
+            return
+        self.push_screen(ChatScreen(self.state, self, focus_input=focus_input))
+
+    def chat_notice(self, text: str, style: str = "grey62",
+                    to_feed: bool = False) -> None:
+        """Command and traceroute output.
+
+        The chat views are message-driven and rebuilt constantly, so notices
+        cannot live there. Multi-line output (help, node lists, a traceroute
+        breakdown) goes to the packet feed, which is append-only and scrolls;
+        short feedback goes to the transient status line.
+        """
+        if to_feed:
+            self.query_one(PacketFeed).write_notice(text, style)
+        elif text.strip():
+            self.note(text.strip(), style)
 
     def action_toggle_pause(self) -> None:
         feed = self.query_one(PacketFeed)
@@ -767,25 +784,16 @@ class MeshTUI(App[None]):
             return
         self.link.send_advert(flood=True)
 
-    def action_next_channel(self) -> None:
-        self.query_one(ChatPane).cycle(1, self.state)
-        self._refresh_overlay()
-
-    def action_prev_channel(self) -> None:
-        self.query_one(ChatPane).cycle(-1, self.state)
-        self._refresh_overlay()
-
     def action_expand_chat(self) -> None:
-        if not isinstance(self.screen, ChatScreen):
-            self.push_screen(ChatScreen(self.state, self))
+        self._open_overlay()
 
     def on_open_chat_overlay(self, event: OpenChatOverlay) -> None:
         self.action_expand_chat()
 
     def goto_channel(self, index: int) -> None:
-        """Jump the chat pane to a channel, used by the channel browser."""
+        """Jump to a channel in the overlay, used by the channel browser."""
         if self.query_one(ChatPane).goto_channel(index, self.state):
-            self.note(f"switched to {self.state.channel_name(index)}", "grey70")
+            self._open_overlay()
         else:
             self.note(f"channel {index} is not on this radio", "yellow")
 
@@ -808,9 +816,8 @@ class MeshTUI(App[None]):
         if node is None:
             self.note("select a node first", "yellow")
             return
-        chat = self.query_one(ChatPane)
-        chat.focus_dm(node.node_id, self.state)
-        self.query_one("#chat-input", Input).focus()
+        self.query_one(ChatPane).focus_dm(node.node_id, self.state)
+        self._open_overlay(focus_input=True)
 
     def action_trace_selected(self) -> None:
         node = self._selected_node()
@@ -829,8 +836,8 @@ class MeshTUI(App[None]):
         if link is None or not self.state.connected:
             self.note("not connected", "red")
             return
-        self.query_one(ChatPane).notice(
-            f"  traceroute to {self.state.node_name(node_id)} sent"
+        self.chat_notice(
+            f"traceroute to {self.state.node_name(node_id)} sent"
             f"{' (direct link only)' if hop_limit <= 1 else f' (up to {hop_limit} hops)'}"
             f" - the reply can take 30s or more", "grey62")
         self.run_worker(
@@ -851,10 +858,6 @@ class MeshTUI(App[None]):
             self.action_inspect_packet()
         elif isinstance(event.data_table, NodeTable):
             self.action_node_detail()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "chat-input":
-            self.query_one(ChatPane).update_counter(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Only ever transmit what was typed into the chat box. Other screens
@@ -884,15 +887,13 @@ class MeshTUI(App[None]):
         text = raw.strip()
         if not text:
             return False
-        chat = self.query_one(ChatPane)
-
         payload = outgoing_payload(text)
         if payload is not None:
             used = payload_bytes(payload)
-            limit = chat.max_bytes
+            limit = self.query_one(ChatPane).max_bytes
             if used > limit:
-                chat.notice(
-                    f"  message is {used} bytes, {used - limit} over the "
+                self.chat_notice(
+                    f"message is {used} bytes, {used - limit} over the "
                     f"{limit}-byte mesh limit - shorten it and send again",
                     "bold red",
                 )
@@ -914,47 +915,47 @@ class MeshTUI(App[None]):
     # ----------------------------------------------------------- commands
 
     def _command(self, line: str) -> None:
-        chat = self.query_one(ChatPane)
         parts = line.split(maxsplit=2)
         cmd = parts[0].lower()
 
         if cmd in ("/help", "/?"):
             for row in HELP.splitlines():
-                chat.notice("  " + row)
+                self.chat_notice("  " + row, to_feed=True)
         elif cmd == "/clear":
-            chat.log.clear()
+            self.query_one(PacketFeed).clear_feed()
         elif cmd == "/nodes":
             for node in self.state.sorted_nodes("heard"):
-                chat.notice(f"  {node.node_id}  {node.label:<6} {node.long_name}")
+                self.chat_notice(f"  {node.node_id}  {node.label:<6} {node.long_name}",
+                                 to_feed=True)
         elif cmd == "/dm":
             if len(parts) < 3:
-                chat.notice("  usage: /dm <node> <text>", "yellow")
+                self.chat_notice("usage: /dm <node> <text>", "yellow")
                 return
             node = self.state.resolve(parts[1])
             if node is None:
-                chat.notice(f"  unknown node: {parts[1]}", "yellow")
+                self.chat_notice(f"unknown node: {parts[1]}", "yellow")
                 return
-            chat.focus_dm(node.node_id, self.state)
+            self.query_one(ChatPane).focus_dm(node.node_id, self.state)
             self._send(parts[2], node.node_id, 0)
         elif cmd == "/trace":
             if len(parts) < 2:
-                chat.notice("  usage: /trace <node> [maxhops]   "
-                            "(use 1 to test only the direct link)", "yellow")
+                self.chat_notice("usage: /trace <node> [maxhops]  "
+                                 "(1 tests only the direct link)", "yellow")
                 return
             node = self.state.resolve(parts[1])
             if node is None:
-                chat.notice(f"  unknown node: {parts[1]}", "yellow")
+                self.chat_notice(f"unknown node: {parts[1]}", "yellow")
                 return
             hop_limit = 5
             if len(parts) >= 3:
                 try:
                     hop_limit = max(1, min(7, int(parts[2].split()[0])))
                 except ValueError:
-                    chat.notice("  maxhops must be a number 1-7", "yellow")
+                    self.chat_notice("maxhops must be a number 1-7", "yellow")
                     return
             self._trace(node.node_id, hop_limit)
         else:
-            chat.notice(f"  unknown command {cmd} - try /help", "yellow")
+            self.chat_notice(f"unknown command {cmd} - try /help", "yellow")
 
     def _send(self, text: str, dest: str, channel: int) -> None:
         if self.link is None or not self.state.connected:

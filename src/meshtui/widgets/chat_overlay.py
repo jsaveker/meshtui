@@ -31,11 +31,15 @@ class ChatScreen(Screen[None]):
         Binding("tab", "focus_input", "message", show=False),
     ]
 
-    def __init__(self, state: MeshState, app_ref) -> None:
+    def __init__(self, state: MeshState, app_ref, focus_input: bool = False) -> None:
         super().__init__()
         self.state = state
         self.app_ref = app_ref
         self._targets: list[tuple] = []
+        self._focus_input_on_mount = focus_input
+
+    def focus_input(self) -> None:
+        self.query_one("#ov-input", ChatInput).focus()
 
     def compose(self) -> ComposeResult:
         yield Static(id="ov-status")
@@ -55,6 +59,8 @@ class ChatScreen(Screen[None]):
         self.rebuild_list()
         self.render_conversation()
         self.set_interval(1.5, self._tick)
+        if self._focus_input_on_mount:
+            self.focus_input()
 
     # ------------------------------------------------------------- sidebar
 

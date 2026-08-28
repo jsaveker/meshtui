@@ -58,7 +58,7 @@ ChatPane {
     border-title-align: left;
 }
 
-#chat-channel {
+#chat-header {
     height: 1;
     padding: 0 1;
     background: $boost;
@@ -69,18 +69,6 @@ ChatPane {
     height: 1fr;
     padding: 0 1;
     scrollbar-size-vertical: 1;
-}
-
-#chat-input {
-    height: 3;
-    border: none;
-    border-top: solid $primary-darken-2;
-    background: $surface;
-    padding: 0 1;
-}
-
-#chat-input:focus {
-    background: $boost;
 }
 
 /* Scoped deliberately: a bare `*:focus-within` also lights up the layout

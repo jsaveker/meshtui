@@ -149,12 +149,14 @@ other device to speed it up.
 
 ## Chat
 
-Chat lives in two places. The **corner pane** (bottom right) is the quick glance
-— one conversation, with a `#channel ▾` button showing what you are looking at
-and the total unread count. Press **`z`** (or click the button) to expand it.
+Chat lives in two places. The **corner pane** (bottom right) is a read-only
+monitor of *every* channel at once — each line tagged with its channel — with no
+input. It is for glancing, not typing. Press **`z`** (or click its header) to open
+the pop-out.
 
-The **pop-out overlay** is where you actually read and write: channels down the
-left, a full-width conversation on the right.
+The **pop-out overlay** is where you read a single channel and write: channels
+down the left, a full-width conversation on the right. `/` opens it straight onto
+the message box.
 
 ```
   chat  -  #weather   (7 nodes, meshcore)   esc to close
@@ -180,8 +182,9 @@ left, a full-width conversation on the right.
 - **Messages are grouped** by sender: name and time once, the body indented and
   wrapped with room. Your own messages show a delivery tick (`✓` acked, `··`
   pending).
-- The corner pane and the overlay share the same selection, so switching a channel
-  in one moves the other. `esc` closes the overlay.
+- The corner monitor always shows everything; the overlay is where you pick a
+  channel and type. Selecting a channel there is what a typed message is addressed
+  to. `esc` closes the overlay.
 
 ## Channels (`c`)
 

@@ -48,10 +48,16 @@ async def main() -> int:
         await pilot.press("escape")
         await pilot.pause()
 
-        # send on a channel
+        # Chat happens in the pop-out overlay; '/' opens it and focuses input.
+        from meshtui.widgets.chat_overlay import ChatScreen
+        app.query_one(NodeTable).focus()
+        await pilot.pause(0.2)
         await pilot.press("slash")
-        await pilot.pause()
-        chat_input = app.query_one("#chat-input")
+        await pilot.pause(0.4)
+        if not isinstance(app.screen, ChatScreen):
+            problems.append("'/' did not open the chat overlay")
+        chat_input = app.screen.query_one("#ov-input")
+        chat_input.focus(); await pilot.pause(0.1)
         chat_input.value = "hello from the smoke test"
         await pilot.press("enter")
         for _ in range(20):
@@ -64,7 +70,7 @@ async def main() -> int:
         elif not any(m.acked for m in sent):
             problems.append("outgoing message never acked")
 
-        # slash commands
+        # slash commands, typed into the overlay input
         for cmd in ("/help", "/nodes", "/bogus", "/dm FLD yo there", "/trace RIDG", "/clear"):
             chat_input.value = cmd
             await pilot.press("enter")
@@ -72,21 +78,12 @@ async def main() -> int:
         if not any(m.outgoing and m.is_dm for m in app.state.chat):
             problems.append("/dm did not send a direct message")
 
-        # channel switching via the shared target, and the pop-out overlay
-        chat = app.query_one(ChatPane)
-        for index in (1, 2, 0):
-            chat.goto_channel(index, app.state)
-            await pilot.pause(0.2)
-        if chat.active_target() != ("channel", 0):
-            problems.append("channel switching did not update the active target")
-        # z is a text character while the chat input has focus; leave it first,
-        # exactly as a user would, before using the single-key binding.
-        app.query_one(NodeTable).focus()
+        # switching a channel in the overlay updates the shared target
+        overlay = app.screen
+        overlay._select_row(len(overlay._targets) - 1)
         await pilot.pause(0.2)
-        await pilot.press("z"); await pilot.pause(0.4)
-        from meshtui.widgets.chat_overlay import ChatScreen
-        if not isinstance(app.screen, ChatScreen):
-            problems.append("z did not open the chat overlay")
+        if app.state.active_target != overlay._targets[-1]:
+            problems.append("overlay channel selection did not update the target")
         await pilot.press("escape"); await pilot.pause(0.3)
         if isinstance(app.screen, ChatScreen):
             problems.append("escape did not close the chat overlay")

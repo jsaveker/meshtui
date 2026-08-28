@@ -25,10 +25,11 @@ async def main():
         chat.set_channels(app.state)
 
         ok = chat.goto_channel(12, app.state)
-        print(f"goto slot 12: {ok}, active={chat.active_target()}")
-        assert ok and chat.active_target() == ("channel", 12), chat.active_target()
+        print(f"goto slot 12: {ok}, active={app.state.active_target}")
+        assert ok and app.state.active_target == ("channel", 12), app.state.active_target
 
-        inp = app.query_one("#chat-input"); inp.focus(); await pilot.pause(0.2)
+        await pilot.press("z"); await pilot.pause(0.4)
+        inp = app.screen.query_one("#ov-input"); inp.focus(); await pilot.pause(0.2)
         inp.value = "to ops"
         await pilot.press("enter"); await pilot.pause(0.4)
         print(f"transmitted: {spy.sent}")
