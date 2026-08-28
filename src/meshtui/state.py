@@ -500,11 +500,11 @@ class MeshState:
         return key
 
     def channel_name(self, index: int) -> str:
-        for item in self.channels:
+        for position, item in enumerate(self.channels):
             if isinstance(item, (tuple, list)) and len(item) == 2:
                 if int(item[0]) == index:
                     return str(item[1])
-            elif self.channels.index(item) == index:
+            elif position == index:
                 return str(item)
         return f"ch{index}"
 

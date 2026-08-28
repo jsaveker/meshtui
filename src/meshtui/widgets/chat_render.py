@@ -14,7 +14,7 @@ from typing import Iterable
 
 from rich.text import Text
 
-from ..model import ChatMessage
+from ..model import ChatMessage, DeliveryStatus
 from ..state import MeshState
 
 # Consecutive messages from the same sender within this many seconds share a
@@ -95,11 +95,23 @@ def _header(msg: ChatMessage, sender: str, state: MeshState,
     header.append("   ")
     header.append(time.strftime("%H:%M", time.localtime(msg.ts)), style="grey42")
     if msg.outgoing:
-        if msg.acked:
-            header.append("  ✓", style="green")     # delivered
-        else:
-            header.append("  ··", style="grey42")  # pending ack
+        marker, style = _delivery_marker(msg)
+        header.append(f"  {marker}", style=style)
     return header
+
+
+def _delivery_marker(msg: ChatMessage) -> tuple[str, str]:
+    """Render local acceptance separately from end-to-end delivery."""
+    status = msg.delivery_status
+    if msg.acked or status == DeliveryStatus.DELIVERED.value:
+        return ("✓", "green")
+    if status == DeliveryStatus.FAILED.value:
+        return ("!", "bold red")
+    if status == DeliveryStatus.EXPIRED.value:
+        return ("×", "red")
+    if status == DeliveryStatus.QUEUED.value:
+        return ("◷", "yellow")
+    return ("··", "grey42")
 
 
 def compact_line(msg: ChatMessage, state: MeshState) -> Text:
@@ -108,8 +120,8 @@ def compact_line(msg: ChatMessage, state: MeshState) -> Text:
     line.append(time.strftime("%H:%M", time.localtime(msg.ts)), style="grey42")
     line.append(" ")
     if msg.outgoing:
-        line.append("OK " if msg.acked else ".. ",
-                    style="green" if msg.acked else "grey42")
+        marker, style = _delivery_marker(msg)
+        line.append(f"{marker:<2} ", style=style)
         line.append("you", style="bold bright_cyan")
     else:
         line.append(_sender(msg, state), style="bold bright_green")

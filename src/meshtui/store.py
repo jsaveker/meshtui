@@ -65,7 +65,9 @@ CREATE TABLE IF NOT EXISTS messages (
     text        TEXT,
     outgoing    INTEGER DEFAULT 0,
     packet_id   INTEGER,
-    acked       INTEGER DEFAULT 0
+    acked       INTEGER DEFAULT 0,
+    message_id  TEXT,
+    delivery_status TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
 
@@ -143,6 +145,32 @@ CREATE TABLE IF NOT EXISTS nodes (
     snr         REAL,
     hops        INTEGER,
     packets     INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS outbox (
+    message_id       TEXT PRIMARY KEY,
+    created_ts       REAL NOT NULL,
+    updated_ts       REAL NOT NULL,
+    protocol         TEXT NOT NULL,
+    destination_kind TEXT NOT NULL,
+    target           TEXT NOT NULL,
+    channel_index    INTEGER,
+    channel_name     TEXT,
+    public_key       TEXT,
+    text             TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    attempts         INTEGER DEFAULT 0,
+    max_attempts     INTEGER DEFAULT 3,
+    next_attempt_ts  REAL,
+    expires_ts       REAL,
+    protocol_id      TEXT,
+    error             TEXT
+);
+CREATE INDEX IF NOT EXISTS outbox_due ON outbox(status, next_attempt_ts);
+
+CREATE TABLE IF NOT EXISTS bot_seen (
+    fingerprint TEXT PRIMARY KEY,
+    seen_ts     REAL NOT NULL
 );
 """
 
@@ -264,6 +292,13 @@ class Store:
         for name, sqltype in NODE_EXTRA_COLUMNS:
             if name not in node_cols:
                 conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {sqltype}")
+
+        message_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        for name, sqltype in (("message_id", "TEXT"),
+                              ("delivery_status", "TEXT DEFAULT ''")):
+            if name not in message_cols:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {sqltype}")
+        conn.execute("CREATE INDEX IF NOT EXISTS messages_message_id ON messages(message_id)")
 
         relay_cols = {row[1] for row in conn.execute("PRAGMA table_info(relays)")}
         if "local_node" in relay_cols:
@@ -388,13 +423,58 @@ class Store:
     def add_message(self, m: ChatMessage) -> None:
         self._put(
             "INSERT INTO messages (ts, from_id, to_id, channel, text, outgoing, packet_id,"
-            " acked) VALUES (?,?,?,?,?,?,?,?)",
+            " acked, message_id, delivery_status) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (m.ts, m.from_id, m.to_id, m.channel, m.text, int(m.outgoing), m.packet_id,
-             int(m.acked)),
+             int(m.acked), m.message_id, m.delivery_status),
         )
 
     def ack_message(self, packet_id: int) -> None:
-        self._put("UPDATE messages SET acked=1 WHERE packet_id=?", (packet_id,))
+        self._put("UPDATE messages SET acked=1, delivery_status='delivered' WHERE packet_id=?",
+                  (packet_id,))
+
+    def update_message_delivery(self, message_id: str, status: str,
+                                packet_id: int | None = None) -> None:
+        self._put(
+            "UPDATE messages SET delivery_status=?, acked=CASE WHEN ?='delivered' "
+            "THEN 1 ELSE acked END, packet_id=COALESCE(?, packet_id) WHERE message_id=?",
+            (status, status, packet_id, message_id),
+        )
+
+    def save_outbound(self, row: dict[str, Any]) -> None:
+        """Insert or replace the durable state of one logical outbound message."""
+        columns = (
+            "message_id", "created_ts", "updated_ts", "protocol", "destination_kind",
+            "target", "channel_index", "channel_name", "public_key", "text", "status",
+            "attempts", "max_attempts", "next_attempt_ts", "expires_ts", "protocol_id",
+            "error",
+        )
+        values = tuple(row.get(column) for column in columns)
+        update = ", ".join(f"{column}=excluded.{column}" for column in columns[1:])
+        self._put(
+            f"INSERT INTO outbox ({', '.join(columns)}) VALUES "
+            f"({', '.join('?' for _ in columns)}) ON CONFLICT(message_id) DO UPDATE SET {update}",
+            values,
+        )
+
+    def load_outbox(self, include_terminal: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_terminal else "WHERE status NOT IN ('delivered','expired')"
+        return [dict(row) for row in self._read(
+            f"SELECT * FROM outbox {where} ORDER BY created_ts ASC")]
+
+    def get_outbound(self, message_id: str) -> dict[str, Any] | None:
+        """Read one durable delivery record, including terminal rows."""
+        rows = self._read("SELECT * FROM outbox WHERE message_id=?", (message_id,))
+        return dict(rows[0]) if rows else None
+
+    def bot_seen(self, fingerprint: str) -> bool:
+        return bool(self._read("SELECT 1 FROM bot_seen WHERE fingerprint=?", (fingerprint,)))
+
+    def add_bot_seen(self, fingerprint: str, seen_ts: float) -> None:
+        self._put("INSERT OR IGNORE INTO bot_seen (fingerprint, seen_ts) VALUES (?,?)",
+                  (fingerprint, seen_ts))
+
+    def prune_bot_seen(self, before_ts: float) -> None:
+        self._put("DELETE FROM bot_seen WHERE seen_ts<?", (before_ts,))
 
     def save_node(self, n: Node) -> None:
         self._put(
@@ -549,7 +629,8 @@ class Store:
                 ts=r["ts"], from_id=r["from_id"] or "", from_name="",
                 to_id=r["to_id"] or "", text=r["text"] or "", channel=r["channel"] or 0,
                 outgoing=bool(r["outgoing"]), packet_id=r["packet_id"],
-                acked=bool(r["acked"]),
+                acked=bool(r["acked"]), message_id=r["message_id"],
+                delivery_status=r["delivery_status"] or "",
             )
             for r in rows
         ]
@@ -580,6 +661,7 @@ class Store:
                     "longName": r["long_name"] or "",
                     "shortName": r["short_name"] or "",
                     "hwModel": r["hw_model"] or "",
+                    "role": r["role"] or "",
                 },
                 "lastHeard": r["last_heard"],
             }

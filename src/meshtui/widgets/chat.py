@@ -89,8 +89,6 @@ class ChatPane(Vertical):
         the first channel.
         """
         target = self._state.active_target if self._state else ("channel", 0)
-        if target and target[0] == "all":
-            return ("channel", 0)
         return target
 
     def set_channels(self, state: MeshState) -> None:

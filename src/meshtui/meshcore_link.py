@@ -26,9 +26,21 @@ import asyncio
 import logging
 import threading
 import time
+import uuid
 from typing import Any, Callable
 
-from .model import BROADCAST, ChatMessage, Packet
+from .model import (
+    BROADCAST,
+    MESHCORE_MAX_PAYLOAD,
+    ChannelRef,
+    ChatMessage,
+    DeliveryStatus,
+    DestinationRef,
+    Packet,
+    PeerRef,
+    SendReceipt,
+    payload_bytes,
+)
 from .radio import Emit, RadioLink
 
 log = logging.getLogger(__name__)
@@ -78,22 +90,26 @@ def contact_to_node(contact: dict[str, Any]) -> dict[str, Any]:
     pubkey = contact.get("public_key") or contact.get("pubkey") or ""
     node_id = key_to_id(pubkey)
     name = (contact.get("adv_name") or contact.get("name") or "").strip()
-    kind = CONTACT_TYPES.get(contact.get("type") or contact.get("adv_type") or 1, "CHAT")
+    raw_kind = contact.get("type") or contact.get("adv_type")
+    kind = CONTACT_TYPES.get(raw_kind, "CHAT") if raw_kind is not None else None
 
     record: dict[str, Any] = {
         "num": key_to_num(pubkey),
-        "user": {
-            "id": node_id,
-            "longName": name or node_id,
-            # MeshCore has no short name; derive something stable and readable.
-            "shortName": (name[:4] or node_id[-4:]).strip(),
-            "hwModel": kind,
-            "role": kind,
-        },
+        "user": {"id": node_id},
     }
+    # Key-only adverts and path updates must enrich an existing contact without
+    # erasing its name or role.  Node.name already falls back to node_id for a
+    # genuinely unknown contact, so synthetic placeholder metadata is harmful.
+    if name:
+        record["user"].update({
+            "longName": name,
+            "shortName": name[:4].strip(),
+        })
+    if kind is not None:
+        record["user"].update({"hwModel": kind, "role": kind})
     lat = contact.get("adv_lat")
     lon = contact.get("adv_lon")
-    if lat or lon:
+    if lat is not None or lon is not None:
         record["position"] = {"latitude": lat, "longitude": lon}
     if contact.get("last_advert"):
         record["lastHeard"] = contact["last_advert"]
@@ -195,11 +211,17 @@ class MeshCoreLink(RadioLink):
         # so a reply can be attributed to the right node.
         self._pending_login: str | None = None
         self._admin_target: str | None = None
+        # expected ACK hex -> meshtui message id.  MeshCore's companion API
+        # reports ACK codes as hex strings, not packet integers.
+        self._pending_acks: dict[str, str] = {}
 
     # ------------------------------------------------------------ lifecycle
 
     def start(self) -> None:
         """Called on a worker thread; owns an asyncio loop for its lifetime."""
+        # A headless gateway may reuse this adapter after a disconnect.
+        self._stopping.clear()
+        self._ready.clear()
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -297,7 +319,7 @@ class MeshCoreLink(RadioLink):
             log.debug("advert failed", exc_info=True)
 
         self._ready.set()
-        while not self._stopping.is_set():
+        while not self._stopping.is_set() and self.connected:
             await asyncio.sleep(0.25)
 
         try:
@@ -338,27 +360,46 @@ class MeshCoreLink(RadioLink):
     def _packet(self, portnum: str, from_id: str, summary: str, *,
                 to_id: str = BROADCAST, snr: float | None = None,
                 rssi: int | None = None, hops: int | None = None,
+                channel: int = 0,
                 raw: dict[str, Any] | None = None) -> None:
         self.emit("packet", Packet(
             ts=time.time(), from_id=from_id, to_id=to_id, portnum=portnum,
-            summary=summary, snr=snr, rssi=rssi, hops=hops,
+            summary=summary, channel=channel, snr=snr, rssi=rssi, hops=hops,
             raw=raw or {},
         ))
+
+    @staticmethod
+    def _signal(data: dict[str, Any], key: str) -> Any:
+        """meshcore_py uses uppercase SNR/RSSI on production receive events."""
+        return data.get(key.lower()) if data.get(key.lower()) is not None else data.get(key.upper())
+
+    def _remember_contact(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Merge a live contact event into the map used by direct sends."""
+        public_key = data.get("public_key") or data.get("pubkey")
+        if not public_key:
+            return data
+        node_id = key_to_id(public_key)
+        merged = dict(self.contacts.get(node_id) or {})
+        merged.update({k: v for k, v in data.items() if v is not None})
+        self.contacts[node_id] = merged
+        return merged
 
     # -------------------------------------------------------------- handlers
 
     def _on_advert(self, event: Any) -> None:
-        data = self._payload(event)
-        node_id = key_to_id(data.get("public_key"))
+        data = self._remember_contact(self._payload(event))
+        node_id = key_to_id(data.get("public_key") or data.get("pubkey"))
         self.emit("mc_contact", data)
         self._packet(PORT_ADVERT, node_id,
                      f"advert from {data.get('adv_name') or node_id}",
-                     snr=data.get("snr"), rssi=data.get("rssi"), raw=data)
+                     snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
+                     raw=data)
 
     def _on_new_contact(self, event: Any) -> None:
-        data = self._payload(event)
+        data = self._remember_contact(self._payload(event))
         self.emit("mc_contact", data)
-        self.emit("status", f"new contact: {data.get('adv_name') or key_to_id(data.get('public_key'))}")
+        key = data.get("public_key") or data.get("pubkey")
+        self.emit("status", f"new contact: {data.get('adv_name') or key_to_id(key)}")
 
     def _on_direct_message(self, event: Any) -> None:
         data = self._payload(event)
@@ -372,7 +413,7 @@ class MeshCoreLink(RadioLink):
             target = node_id if node_id != "!00000000" else self._admin_target
             self.emit("mc_cli", (target or node_id, text))
             self._packet(PORT_CLI, target or node_id, text[:80],
-                         to_id=self.my_node_id, snr=data.get("snr"), raw=data)
+                         to_id=self.my_node_id, snr=self._signal(data, "snr"), raw=data)
             return
 
         self.emit("chat", ChatMessage(
@@ -381,22 +422,28 @@ class MeshCoreLink(RadioLink):
             channel=-1,
         ))
         self._packet(PORT_TEXT, node_id, f'"{text}"', to_id=self.my_node_id,
-                     snr=data.get("snr"), raw=data)
+                     snr=self._signal(data, "snr"), raw=data)
 
     def _on_channel_message(self, event: Any) -> None:
         data = self._payload(event)
-        node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
         text = data.get("text") or data.get("msg") or ""
         channel = int(data.get("channel_idx") or 0)
+        key = data.get("pubkey_prefix") or data.get("public_key")
+        # The production companion channel frame contains no sender key.  Keep
+        # anonymous traffic out of the node database instead of inventing the
+        # real-looking !00000000 identity used by older tests.
+        node_id = key_to_id(key) if key else f"channel:{channel}:anonymous"
         self.emit("chat", ChatMessage(
             ts=data.get("sender_timestamp") or time.time(),
             from_id=node_id, from_name="", to_id=BROADCAST, text=text,
             channel=channel,
         ))
-        self._packet(PORT_TEXT, node_id, f'"{text}"', snr=data.get("snr"), raw=data)
+        self._packet(PORT_TEXT, node_id, f'"{text}"',
+                     snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
+                     channel=channel, raw=data)
 
     def _on_path_update(self, event: Any) -> None:
-        data = self._payload(event)
+        data = self._remember_contact(self._payload(event))
         node_id = key_to_id(data.get("public_key") or data.get("pubkey_prefix"))
         path = data.get("out_path") or data.get("path") or ""
         hops = data.get("out_path_len")
@@ -406,9 +453,20 @@ class MeshCoreLink(RadioLink):
 
     def _on_ack(self, event: Any) -> None:
         data = self._payload(event)
-        code = data.get("code") or data.get("value")
-        if isinstance(code, int):
-            self.emit("ack", code)
+        code = data.get("code") if data.get("code") is not None else data.get("value")
+        if isinstance(code, bytes):
+            code = code.hex()
+        if isinstance(code, (str, int)):
+            token = str(code).lower()
+            message_id = self._pending_acks.pop(token, None)
+            if message_id:
+                self.emit("receipt", SendReceipt(
+                    message_id=message_id,
+                    destination=PeerRef("meshcore", ""),
+                    status=DeliveryStatus.DELIVERED,
+                    protocol_id=token,
+                    detail=f"acknowledged in {data.get('trip_time', '?')}ms",
+                ))
         self._packet(PORT_ACK, "self", f"ack {code}", raw=data)
 
     def _on_telemetry(self, event: Any) -> None:
@@ -425,7 +483,8 @@ class MeshCoreLink(RadioLink):
         data = self._payload(event)
         self._packet(PORT_RXLOG, key_to_id(data.get("pubkey_prefix") or ""),
                      f"rx {data.get('payload_len', '?')}B",
-                     snr=data.get("snr"), rssi=data.get("rssi"), raw=data)
+                     snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
+                     raw=data)
 
     def _attribute(self, data: dict[str, Any], fallback: str | None) -> str:
         """Whose reply is this? Prefer the payload, fall back to who we asked."""
@@ -501,10 +560,11 @@ class MeshCoreLink(RadioLink):
             self.emit("error", f"could not read contacts: {exc}")
             return
         contacts = self._payload(result)
+        self.contacts.clear()
         for contact in (contacts or {}).values():
             if isinstance(contact, dict):
-                self.contacts[key_to_id(contact.get("public_key"))] = contact
-                self.emit("mc_contact", contact)
+                merged = self._remember_contact(contact)
+                self.emit("mc_contact", merged)
         self.emit("status", f"{len(self.contacts)} contacts")
 
     async def _check_autoadd(self) -> None:
@@ -530,6 +590,7 @@ class MeshCoreLink(RadioLink):
         send_chan_msg addresses.
         """
         found: list[tuple[int, str]] = []
+        self.channel_secrets.clear()
         for index in range(self.max_channels):
             try:
                 result = await self.mc.commands.get_channel(index)
@@ -548,22 +609,88 @@ class MeshCoreLink(RadioLink):
 
     # ------------------------------------------------------------- commands
 
+    def send(self, text: str, destination: DestinationRef,
+             message_id: str) -> SendReceipt:
+        if payload_bytes(text) > MESHCORE_MAX_PAYLOAD:
+            detail = (f"message is {payload_bytes(text)} bytes; MeshCore limit is "
+                      f"{MESHCORE_MAX_PAYLOAD}")
+            self.emit("error", detail)
+            return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                               detail=detail)
+        if isinstance(destination, ChannelRef):
+            if not 0 <= destination.index <= 255:
+                return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                                   detail="invalid channel slot")
+            if not self.connected or self.mc is None:
+                return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                                   detail="not connected")
+            coro = self.mc.commands.send_chan_msg(destination.index, text)
+        else:
+            contact = self._destination_for(destination)
+            if contact is None:
+                detail = f"no contact for {destination.node_id}"
+                self.emit("error", detail)
+                return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                                   detail=detail)
+            if not self.connected or self.mc is None:
+                return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                                   detail="not connected")
+            coro = self.mc.commands.send_msg(contact, text)
+        future = self._submit(coro)
+        if future is None:
+            coro.close()
+            return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                               detail="not connected")
+
+        def completed(done) -> None:
+            try:
+                event = done.result()
+                is_error = bool(event is None or
+                                (hasattr(event, "is_error") and event.is_error()))
+                if is_error:
+                    detail = str(getattr(event, "payload", None) or "radio rejected message")
+                    receipt = SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                                          detail=detail)
+                else:
+                    payload = getattr(event, "payload", {}) or {}
+                    expected = payload.get("expected_ack")
+                    if isinstance(expected, bytes):
+                        expected = expected.hex()
+                    if isinstance(destination, PeerRef) and expected:
+                        token = str(expected).lower()
+                        self._pending_acks[token] = message_id
+                        receipt = SendReceipt(message_id, destination, DeliveryStatus.SENT,
+                                              protocol_id=token,
+                                              detail="waiting for mesh acknowledgement")
+                    else:
+                        # Channel sends only have local-radio acceptance; do not
+                        # mislabel that as end-to-end delivery.
+                        receipt = SendReceipt(message_id, destination, DeliveryStatus.SENT,
+                                              detail="accepted by radio")
+                self.emit("receipt", receipt)
+            except Exception as exc:  # noqa: BLE001
+                self.emit("receipt", SendReceipt(
+                    message_id, destination, DeliveryStatus.FAILED, detail=str(exc)))
+
+        future.add_done_callback(completed)
+        return SendReceipt(message_id, destination, DeliveryStatus.QUEUED,
+                           detail="submitted to MeshCore link")
+
     def send_text(self, text: str, dest: str = BROADCAST,
                   channel: int = 0) -> tuple[bool, int | None]:
-        if dest in (BROADCAST, "^all"):
-            future = self._submit(self.mc.commands.send_chan_msg(channel, text))
-        else:
-            contact = self._contact_for(dest)
-            if contact is None:
-                self.emit("error", f"no contact for {dest}")
-                return (False, None)
-            future = self._submit(self.mc.commands.send_msg(contact, text))
-        if future is None:
-            return (False, None)
-        return (True, None)
+        destination: DestinationRef = (
+            ChannelRef("meshcore", channel) if dest in (BROADCAST, "^all")
+            else PeerRef("meshcore", dest)
+        )
+        receipt = self.send(text, destination, uuid.uuid4().hex)
+        return (receipt.accepted, None)
 
     def _contact_for(self, node_id: str) -> dict[str, Any] | None:
         return self.contacts.get(node_id)
+
+    def _destination_for(self, peer: PeerRef) -> dict[str, Any] | str | None:
+        """Prefer the live contact (and its path), then a durable full key."""
+        return self._contact_for(peer.node_id) or peer.public_key
 
     def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         contact = self._contact_for(dest)
@@ -643,6 +770,20 @@ class MeshCoreLink(RadioLink):
         if future is not None:
             self.emit("status", f"channel {index} set to {name}")
             self._submit(self._reload_channels())
+
+    def rename_channel(self, index: int, name: str) -> bool:
+        """Rename a slot without silently changing its 16-byte key."""
+        secret = self.channel_secrets.get(index)
+        if secret is None:
+            self.emit("error", f"cannot rename channel {index}: current key is unknown")
+            return False
+        if name.startswith("#"):
+            # meshcore_py deliberately replaces any supplied secret for a
+            # hashtag name, so it cannot satisfy a preserve-key rename.
+            self.emit("error", "cannot preserve a key when renaming to a #hashtag channel")
+            return False
+        self.set_channel(index, name, bytes(secret))
+        return True
 
     def delete_channel(self, index: int) -> None:
         """Blank a slot: empty name and an all-zero key."""

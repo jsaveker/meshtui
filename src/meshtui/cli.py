@@ -3,12 +3,164 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
+from pathlib import Path
 
 from .radio import find_serial_ports, find_wifi_nodes
 from .store import Store, default_db_path
+
+
+def _gateway_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="meshtui gateway",
+        description="Run one unattended owner for the radio and durable outbound queue.",
+    )
+    parser.add_argument("-p", "--port", help="serial device (default: autodetect)")
+    parser.add_argument("-H", "--host", help="radio TCP host[:port]")
+    parser.add_argument("--protocol", choices=("auto", "meshtastic", "meshcore"),
+                        default="auto")
+    parser.add_argument("--demo", action="store_true", help="use the synthetic mesh")
+    parser.add_argument("--db", help=f"database path (default: {default_db_path()})")
+    parser.add_argument("--socket", help="local Unix socket path")
+    parser.add_argument("--bot-channel", metavar="NAME_OR_SLOT",
+                        help="enable @ai routing on this channel, e.g. '#bots' or 5")
+    parser.add_argument("--ai-model", default="gpt-5-mini")
+    parser.add_argument("--ai-endpoint", help="Responses-compatible API endpoint")
+    parser.add_argument("--debug", action="store_true")
+    return parser
+
+
+def run_gateway(argv: list[str]) -> int:
+    from .gateway import build_gateway
+
+    args = _gateway_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    store = Store(args.db)
+    if not store.open():
+        print(store.error or "could not open gateway database", file=sys.stderr)
+        return 1
+    channel: str | int | None = args.bot_channel
+    if isinstance(channel, str) and channel.isdigit():
+        channel = int(channel)
+    gateway = build_gateway(
+        store=store, port=args.port, host=args.host, protocol=args.protocol,
+        demo=args.demo, socket_path=args.socket, bot_channel=channel,
+        ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
+    )
+    try:
+        gateway.start()
+        print(f"meshtui gateway listening on {gateway.socket_path}", flush=True)
+        gateway.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"gateway failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        gateway.stop()
+        store.close()
+    return 0
+
+
+def _send_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="meshtui send",
+        description="Queue a message through the running local meshtui gateway.",
+    )
+    parser.add_argument("--socket", help="gateway Unix socket path")
+    parser.add_argument("--protocol", choices=("meshtastic", "meshcore"))
+    sub = parser.add_subparsers(dest="kind", required=True)
+    dm = sub.add_parser("dm", help="send a direct message")
+    dm.add_argument("--to", required=True, help="destination node id")
+    dm.add_argument("--public-key", help="MeshCore peer's full public key (hex)")
+    dm.add_argument("--wait", type=float, metavar="SECONDS",
+                    help="wait for an end-to-end mesh acknowledgement")
+    dm.add_argument("text", nargs="+")
+    channel = sub.add_parser("channel", help="send to an exact channel name or slot")
+    channel.add_argument("--channel", required=True, help="channel name or numeric slot")
+    channel.add_argument("text", nargs="+")
+    return parser
+
+
+def run_send(argv: list[str]) -> int:
+    from .gateway import request_gateway
+
+    args = _send_parser().parse_args(argv)
+    request: dict[str, object] = {
+        "command": "send", "kind": args.kind, "text": " ".join(args.text),
+    }
+    if args.protocol:
+        request["protocol"] = args.protocol
+    if args.kind == "dm":
+        request["to"] = args.to
+        if args.public_key:
+            request["public_key"] = args.public_key
+    else:
+        request["channel"] = args.channel
+    socket_path = Path(args.socket) if args.socket else None
+    try:
+        result = request_gateway(request, socket_path)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"could not reach meshtui gateway: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if not result.get("ok"):
+        return 1
+    wait_seconds = getattr(args, "wait", None)
+    if wait_seconds is None:
+        return 0
+    if wait_seconds <= 0:
+        print("--wait must be greater than zero", file=sys.stderr)
+        return 2
+    message_id = result.get("message_id")
+    deadline = time.monotonic() + wait_seconds
+    last_status = result.get("status")
+    while True:
+        try:
+            delivery = request_gateway(
+                {"command": "delivery", "message_id": message_id}, socket_path)
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"lost gateway while waiting for delivery: {exc}", file=sys.stderr)
+            return 1
+        if not delivery.get("ok"):
+            print(json.dumps(delivery, indent=2, sort_keys=True), file=sys.stderr)
+            return 1
+        status = delivery.get("status")
+        if status != last_status:
+            print(json.dumps(delivery, indent=2, sort_keys=True))
+            last_status = status
+        if status == "delivered":
+            return 0
+        if delivery.get("terminal"):
+            return 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(f"timed out after {wait_seconds:g}s waiting for {message_id}; "
+                  f"last status was {status}", file=sys.stderr)
+            return 3
+        time.sleep(min(0.5, remaining))
+
+
+def run_gateway_status(argv: list[str]) -> int:
+    from .gateway import request_gateway
+
+    parser = argparse.ArgumentParser(prog="meshtui gateway-status")
+    parser.add_argument("--socket")
+    args = parser.parse_args(argv)
+    try:
+        result = request_gateway(
+            {"command": "status"}, Path(args.socket) if args.socket else None)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"could not reach meshtui gateway: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("ok") else 1
 
 
 def run_audit(db_path: str | None) -> int:
@@ -93,9 +245,18 @@ def run_audit(db_path: str | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "gateway":
+        return run_gateway(argv[1:])
+    if argv and argv[0] == "send":
+        return run_send(argv[1:])
+    if argv and argv[0] == "gateway-status":
+        return run_gateway_status(argv[1:])
     parser = argparse.ArgumentParser(
         prog="meshtui",
-        description="Terminal dashboard for a Meshtastic mesh.",
+        description="Terminal dashboard and gateway for Meshtastic and MeshCore meshes.",
+        epilog=("unattended commands: meshtui gateway, meshtui gateway-status, "
+                "meshtui send dm, meshtui send channel"),
     )
     parser.add_argument("-p", "--port", help="serial device (default: autodetect)")
     parser.add_argument(

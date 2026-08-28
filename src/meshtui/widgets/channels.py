@@ -197,6 +197,21 @@ class ChannelScreen(Screen[None]):
             if not name:
                 self._say("a channel needs a name", "yellow")
                 return
+            if verb == "name":
+                if secret is not None:
+                    self._say("name preserves the current key; do not supply a new one", "yellow")
+                    return
+                if not hasattr(self.link, "rename_channel") \
+                        or not self.link.rename_channel(index, name):
+                    self._say(f"channel {index} was not renamed; its key is unchanged", "yellow")
+                    return
+                self._say(f"slot {index} renamed to {name}  (existing key preserved)",
+                          "bright_cyan")
+                return
+            if name.startswith("#") and secret is not None:
+                self._say("#hashtag channels derive their key from the name; an explicit key "
+                          "would be ignored", "yellow")
+                return
             self.link.set_channel(index, name, secret)
             how = ("explicit key" if secret
                    else "key derived from the name" if name.startswith("#")

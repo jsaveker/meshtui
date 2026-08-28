@@ -61,7 +61,8 @@ flood = contact_to_node({"public_key": KEY, "adv_name": "X", "out_path_len": -1}
 check("flood route has no hop count", "hopsAway" in flood, False)
 
 unnamed = contact_to_node({"public_key": KEY})
-check("unnamed falls back to id", unnamed["user"]["longName"], "!2935ec59")
+check("key-only update carries no destructive placeholder name",
+      "longName" in unnamed["user"], False)
 
 print("\ncontact types")
 for value, label in CONTACT_TYPES.items():

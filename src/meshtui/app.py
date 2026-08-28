@@ -13,11 +13,14 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Input, Static
 
-from .model import BROADCAST, ChatMessage, Packet, outgoing_payload, payload_bytes
-from .meshcore_link import MeshCoreLink, contact_to_node, probe_meshcore
-from .radio import (DemoLink, RadioLink, SerialLink, TCPLink, flatten,
-                    find_serial_ports, max_payload_bytes, traceroute_hops)
-from .state import ForeignChannel, LocalChannel, MeshState, RelayStat
+from .model import (BROADCAST, ChannelRef, ChatMessage, DeliveryStatus, Packet,
+                    PeerRef, outgoing_payload, payload_bytes)
+from .meshcore_link import MeshCoreLink, probe_meshcore
+from .radio import (DemoLink, RadioLink, SerialLink, TCPLink,
+                    find_serial_ports, protocol_payload_limit,
+                    traceroute_hops)
+from .state import ForeignChannel, RelayStat
+from .service import MeshService
 from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.admin import AdminScreen
 from .widgets.audit import AuditScreen
@@ -96,16 +99,28 @@ class MeshTUI(App[None]):
                  store: Store | None = None, restore_limit: int = 3000,
                  host: str | None = None, protocol: str = "auto") -> None:
         super().__init__()
-        self.state = MeshState()
+        self.service = MeshService(store)
+        self.state = self.service.state
+        if protocol != "auto":
+            self.state.protocol = protocol
         self.port = port
         self.host = host
         self.protocol = protocol
         self.demo = demo
         self.store = store
         self.restore_limit = restore_limit
-        self.link: RadioLink | None = None
+        self._link: RadioLink | None = None
         self._status_note: tuple[str, str] = ("starting...", "grey70")
         self._note_until: float = 0.0
+
+    @property
+    def link(self) -> RadioLink | None:
+        return self._link
+
+    @link.setter
+    def link(self, value: RadioLink | None) -> None:
+        self._link = value
+        self.service.attach_link(value)
 
     # ------------------------------------------------------------- layout
 
@@ -126,8 +141,8 @@ class MeshTUI(App[None]):
         self.query_one(PacketFeed).border_title = "packets - all"
         chat = self.query_one(ChatPane)
         chat.set_title("chat")
-        # Take the limit from the installed library rather than hard-coding it.
-        chat.max_bytes = max_payload_bytes()
+        # Explicit MeshCore mode must be safe even before the radio connects.
+        chat.max_bytes = protocol_payload_limit(self.state.protocol)
 
         self._restore()
         self.set_interval(1.0, self._tick)
@@ -456,13 +471,7 @@ class MeshTUI(App[None]):
         if kind == "packet":
             self._on_packet(payload)
         elif kind == "node":
-            try:
-                node = self.state.upsert_node(payload)
-            except ValueError:
-                pass
-            else:
-                if self.store is not None:
-                    self.store.save_node(node)
+            self.service.receive_node(payload)
         elif kind == "chat":
             self._on_chat(payload)
         elif kind == "connected":
@@ -471,18 +480,16 @@ class MeshTUI(App[None]):
             self.state.connected = False
             self.note(str(payload), "red")
         elif kind == "ack":
-            msg = self.state.ack(int(payload))
-            if msg is not None:
-                if self.store is not None:
-                    self.store.ack_message(int(payload))
+            receipt = self.service.ack_protocol(payload)
+            if receipt is not None:
                 self.query_one(ChatPane).rerender(self.state)
+                self._refresh_overlay()
+        elif kind == "receipt":
+            self.service.apply_receipt(payload)
+            self.query_one(ChatPane).rerender(self.state)
+            self._refresh_overlay()
         elif kind == "mc_contact":
-            try:
-                node = self.state.upsert_node(contact_to_node(payload))
-            except (ValueError, AttributeError):
-                return
-            if self.store is not None:
-                self.store.save_node(node)
+            self.service.receive_contact(payload)
         elif kind == "mc_autoadd":
             self.state.radio_info["autoadd"] = payload
         elif kind == "mc_channels":
@@ -575,29 +582,13 @@ class MeshTUI(App[None]):
         feed.write_notice("", "grey42")
 
     def _on_packet(self, packet: Packet) -> None:
-        # Make sure every sender exists in the node table, even before its
-        # NODEINFO arrives, so counts and names line up.
-        if packet.from_id not in self.state.nodes and packet.from_id.startswith("!"):
-            try:
-                self.state.upsert_node({"id": packet.from_id, "num": packet.raw.get("from")})
-            except ValueError:
-                pass
-        self.state.add_packet(packet)
-        if self.store is not None:
-            self.store.add_packet(packet)
+        self.service.receive_packet(packet)
         self.query_one(PacketFeed).add(packet, self.state)
         if packet.portnum == "TRACEROUTE_APP":
             self._show_traceroute(packet)
 
     def _on_chat(self, message: ChatMessage) -> None:
-        message.from_name = self.state.node_name(message.from_id)
-        self.state.add_chat(message)
-        if self.store is not None:
-            self.store.add_message(message)
-        # A received DM opens a conversation with its sender.
-        if message.is_dm and not message.outgoing:
-            self.state.dm_contacts.add(message.from_id)
-        self.state.note_incoming(message)
+        self.service.receive_chat(message)
         chat = self.query_one(ChatPane)
         if not chat.add(message, self.state):
             # Not the conversation on screen; keep the corner button's unread
@@ -617,42 +608,19 @@ class MeshTUI(App[None]):
             screen.render_conversation()
 
     def _on_connected(self, info: dict[str, Any]) -> None:
-        self.state.connected = True
-        self.state.my_node_id = info.get("my_node_id")
-        self.state.my_node_name = info.get("my_node_name") or ""
-        self.state.firmware = info.get("firmware") or ""
-        self.state.device_path = info.get("device") or ""
-        self.state.protocol = info.get("protocol", "meshtastic")
-        self.state.radio_info = dict(info.get("radio") or {})
-        self.state.channels = list(info.get("channels") or ["LongFast"])
-        self.state.max_channels = int(info.get("max_channels") or 8)
-        self.state.local_channels = [
-            LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
-                         level=c.get("level", "UNKNOWN"), detail=c.get("detail", ""),
-                         hash=c.get("hash"))
-            for i, c in enumerate(info.get("channel_security") or [])
-        ]
+        previous_observer = self.store.local_node if self.store is not None else None
+        self.service.connected(info)
+        # _restore_for_observer needs to compare the old observer with the newly
+        # connected radio before it changes Store.local_node.
+        if self.store is not None:
+            self.store.local_node = previous_observer
+        self.query_one(ChatPane).max_bytes = protocol_payload_limit(self.state.protocol)
         weak = [c for c in self.state.local_channels if c.level in ("OPEN", "PUBLIC", "WEAK")]
         if weak:
             self.note(
                 f"{len(weak)} of your channels are not private - press 'a' for the audit",
                 "bold red",
             )
-        if self.state.my_node_id:
-            # MeshCore has no self-contact, so make sure the local radio is in
-            # the node table like Meshtastic's NodeDB puts it there.
-            try:
-                me = self.state.upsert_node({
-                    "num": int(self.state.my_node_id.lstrip("!"), 16),
-                    "user": {"id": self.state.my_node_id,
-                             "longName": self.state.my_node_name or "this radio",
-                             "shortName": (self.state.my_node_name or "self")[:4],
-                             "hwModel": info.get("protocol", "").upper() or ""},
-                })
-                me.is_self = True
-                me.last_heard = time.time()
-            except (ValueError, AttributeError):
-                pass
         self._restore_for_observer()
         self.query_one(ChatPane).set_channels(self.state)
         self.note("connected", "green")
@@ -660,6 +628,7 @@ class MeshTUI(App[None]):
     # ------------------------------------------------------------ refresh
 
     def _tick(self) -> None:
+        self.service.process_outbox()
         self.query_one(NodeTable).render_state(self.state)
         self.query_one(StatsPane).render_state(self.state)
         self._render_status()
@@ -904,10 +873,15 @@ class MeshTUI(App[None]):
             self._command(text)
             return True
 
-        kind, target = self.active_chat_target()
-        self._send(text, target if kind == "dm" else BROADCAST,
-                   0 if kind == "dm" else int(target))  # type: ignore[arg-type]
-        return True
+        active = self.active_chat_target()
+        kind = active[0]
+        if kind == "all":
+            self.chat_notice("select a channel or direct-message conversation before sending",
+                             "yellow")
+            return False
+        target = active[1]
+        return self._send(text, target if kind == "dm" else BROADCAST,
+                          0 if kind == "dm" else int(target))  # type: ignore[arg-type]
 
     def active_chat_target(self) -> tuple[str, Any]:
         return self.query_one(ChatPane).active_target()
@@ -957,32 +931,20 @@ class MeshTUI(App[None]):
         else:
             self.chat_notice(f"unknown command {cmd} - try /help", "yellow")
 
-    def _send(self, text: str, dest: str, channel: int) -> None:
-        if self.link is None or not self.state.connected:
-            self.note("not connected - cannot send", "red")
-            return
-        accepted, packet_id = self.link.send_text(text, dest=dest, channel=channel)
-        if not accepted:
-            # The radio rejected it; recording it would show a message that
-            # never left as pending forever.
-            return
-        message = ChatMessage(
-            ts=time.time(),
-            from_id=self.state.my_node_id or "!me",
-            from_name="you",
-            to_id=dest,
-            text=text,
-            channel=channel,
-            outgoing=True,
-            packet_id=packet_id,
-        )
-        self.state.add_chat(message)
-        if self.store is not None:
-            self.store.add_message(message)
-        self.state.stats.sent += 1
-        if message.is_dm:
-            self.state.dm_contacts.add(dest)
+    def _send(self, text: str, dest: str, channel: int) -> bool:
+        if self.protocol == "auto" and not self.state.connected:
+            self.note("protocol detection has not finished; use --protocol for offline queueing",
+                      "yellow")
+            return False
+        destination = (PeerRef(self.state.protocol, dest) if dest != BROADCAST
+                       else ChannelRef(self.state.protocol, channel,
+                                       self.state.channel_name(channel)))
+        receipt = self.service.send_message(text, destination)
+        if receipt.status == DeliveryStatus.FAILED:
+            self.note(receipt.detail or "send failed", "red")
+        elif not self.state.connected:
+            self.note("radio offline - message queued for retry", "yellow")
         chat = self.query_one(ChatPane)
-        if not chat.add(message, self.state):
-            chat.rerender(self.state)
+        chat.rerender(self.state)
         self._refresh_overlay()
+        return receipt.message_id in self.service.outbox

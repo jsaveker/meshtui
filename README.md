@@ -81,7 +81,8 @@ you hear directly:
 - **Node table** — SNR, hop distance, battery, packet count and age for every node,
   with a rolling SNR sparkline per node so you can see which links are fading.
 - **Chat** — a tab per channel, plus direct messages. Live byte counter against the
-  mesh's 233-byte payload limit.
+  active protocol's payload limit (Meshtastic's installed protobuf limit or a
+  conservative 133-byte MeshCore limit).
 - **Map** — braille-rendered positions, distance rings, pan and zoom, colour by
   SNR / hops / age.
 - **Packet inspector** — full decoded protobuf and a hex dump for any packet.
@@ -298,6 +299,134 @@ meshtui --export packets:out.csv   # dump a table to CSV and exit
 meshtui --audit              # offline channel security audit, then exit
 ```
 
+## Unattended home gateway, DMs, and `#bots`
+
+Run the gateway on the computer that stays at home with the companion radio
+attached. It is the **only process that opens the radio**. The TUI and a second
+CLI process must not open the same serial port at the same time; local producers
+send requests to the gateway's owner-only Unix socket instead.
+
+```bash
+# Home computer: reliable radio owner and outbound queue
+meshtui gateway --protocol meshtastic --port /dev/ttyACM0
+
+# Any local automation on that home computer: DM the radio paired to your phone
+meshtui send dm --to '!20000002' 'garage is closed and the alarm is armed'
+
+# Acceptance mode: exit 0 only after the direct-message mesh ACK arrives
+meshtui send dm --to '!20000002' --wait 300 'numbered field test'
+
+# If a MeshCore peer is not yet in the live contact list, its full key is usable
+meshtui send dm --to '!2935ec59' \
+  --public-key "$MOBILE_MESHCORE_PUBLIC_KEY" 'numbered test 1'
+
+# Inspect the unattended process
+meshtui gateway-status
+```
+
+The send command records one logical message in SQLite before touching the
+radio. The gateway reopens a failed or disconnected companion link; messages
+remain queued across radio and process restarts. A direct message is retried with
+backoff up to three attempts and expires after 24 hours.
+The displayed states mean:
+
+- `queued`: durable locally, not yet accepted by the radio
+- `sent`: accepted by the local radio; it has **not** proved the recipient saw it
+- `delivered`: the direct-message mesh acknowledgement arrived
+- `failed` or `expired`: the retry or time limit stopped the attempt
+
+Channel broadcasts stop at `sent`, because neither protocol can prove that every
+channel member received a broadcast. A missing acknowledgement can also cause a
+direct-message retry, so the mobile recipient should tolerate the occasional
+duplicate for important notifications.
+
+For a named channel, use its name while the radio is online or its exact numeric
+slot while offline. Sparse slots are preserved:
+
+```bash
+meshtui send channel --channel '#bots' '@ai summarize the weather alert'
+meshtui send channel --channel 12 '@ai summarize the weather alert'
+```
+
+### Tool-free AI replies
+
+Set `OPENAI_API_KEY` only in the home gateway's service environment, then opt in
+to one channel when starting it:
+
+```bash
+OPENAI_API_KEY='...' meshtui gateway \
+  --protocol meshtastic --port /dev/ttyACM0 \
+  --bot-channel '#bots' --ai-model gpt-5-mini
+```
+
+Messages must begin with `@ai`. The router answers only in the configured bot
+channel or in a direct message addressed to the home node. It passes the provider
+only the prompt, sender ID, and conversation label; the provider API has no tool
+interface and receives no database history, local files, commands, or radio
+credentials. The request explicitly supplies no tools, forbids tool choice, and
+sets `store: false`. Replies are prefixed `[AI]`, UTF-8 safe, limited to three packets,
+rate-limited per sender, and duplicate-suppressed in SQLite across restarts.
+
+From work, use the mobile radio's normal Meshtastic or MeshCore phone client:
+
+1. Send `@ai ...` in the shared `#bots` channel for a channel reply, or DM the
+   home node with `@ai ...` for a private reply.
+2. The home radio receives it, the gateway invokes the text-only provider, and
+   the response goes back through the same channel or peer route.
+3. Home automations use `meshtui send dm --to <mobile-node-id> ...` to initiate a
+   message to you without opening the serial port themselves.
+
+This provides the software path, not RF coverage. Home-to-work delivery still
+requires both nodes to share the same modem/region and channel configuration and
+to have a real route: direct RF, a chain of repeaters, or—on Meshtastic—an MQTT
+bridge deliberately configured at both ends. MeshCore uses its learned contacts
+and repeater paths; the home radio must first know the mobile peer's full public
+key. Prove the route with a harmless numbered DM before depending on it for an
+alarm.
+
+For an always-on installation, run `meshtui gateway` under your normal service
+manager with restart-on-failure, a fixed `--db` and `--socket`, access to the
+serial device, and the API key in a protected environment file. Do not place the
+key in a mesh message or command-line argument.
+
+Non-AI home bots do not need an SDK. Their final action is simply a local command:
+
+```bash
+meshtui send channel --channel '#bots' 'backup completed at 02:14'
+meshtui send dm --to '!20000002' 'water sensor is dry again'
+```
+
+### Home-to-work RF acceptance test
+
+Do this before treating the path as operational:
+
+1. Record the home and mobile node IDs, protocol, region/modem preset, `#bots`
+   slot, and—on MeshCore—the full public keys. Confirm both radios show the same
+   intended channel configuration.
+2. Start the home gateway with a new test database. At work, send the home node
+   `@ai field-001 reply with field-001` by DM. Require the numbered response on
+   the mobile device and a direct-message acknowledgement at home.
+3. From the home computer, run
+   `meshtui send dm --to <mobile-id> --wait 300 'field-002'`. Require `field-002`
+   on the phone and a zero exit status after `delivered`; `sent` alone is not
+   end-to-end proof.
+4. Repeat on `#bots`, including a channel stored at a sparse slot such as 12.
+   Expect `sent`, not `delivered`, because broadcasts have no recipient ACK.
+5. Disconnect the home radio, enqueue `field-003`, restart the gateway, then
+   reconnect it. The same message ID must survive and drain from the outbox; the
+   chat history must contain one logical outgoing message.
+6. Make the mobile node unavailable for one test. Confirm exponential retry stops
+   after three attempts or at the 24-hour expiry. Restore it and send a fresh
+   numbered message; do not silently extend retries for an alarm forever.
+7. Re-send the same captured `@ai` packet in a lab/replay setup. The provider must
+   be called once. Send a long emoji-heavy answer and verify every emitted frame
+   remains under the active protocol's byte limit and no more than three frames
+   are transmitted.
+
+The repository simulations cover steps 4–7 in `tests/test_service.py` and
+`tests/test_gateway_bot.py`; steps 1–3 require the two actual radios and the route
+between home and work.
+
 Only one process can hold the serial port at a time — the meshtastic library opens
 it exclusively, so a second `meshtui` (or the `meshtastic` CLI, or a serial monitor)
 will be told the port is busy.
@@ -460,10 +589,11 @@ interface stays live. Replies can take 30 seconds or more.
 
 ## Message length
 
-Meshtastic caps a packet's data payload at **233 bytes** (`DATA_PAYLOAD_LEN`, read
-from the installed library at runtime rather than hard-coded). The chat pane shows
-a live counter in its bottom border — `142/233 bytes` — yellow past 85%, red past
-the limit.
+Meshtastic's limit comes from the installed protobuf's `DATA_PAYLOAD_LEN` (233
+bytes in current releases). MeshCore is held to a conservative **133 UTF-8
+bytes**. The chat pane switches with the connected protocol and shows a live
+counter in its bottom border — `112/133 bytes`, for example — yellow past 85% and
+red past the limit.
 
 The count is in **bytes, not characters**: accented letters cost 2 and most emoji
 cost 4, so 60 emoji already exceed the limit. For `/dm <node> <text>` only `<text>`
@@ -661,17 +791,22 @@ sqlite3 ~/.local/share/meshtui/mesh.db \
 ```
 
 > **That database contains other people's data** — node IDs, GPS positions and
-> message content from every radio your node hears. It stays on your machine;
-> meshtui never uploads anything. It lives outside the repository and `*.db` is
-> gitignored, but be deliberate before sharing one, and remember that a public
-> mesh is not a private channel.
+> message content from every radio your node hears. It stays on your machine by
+> default. If you explicitly enable the AI router, only an `@ai` prompt plus its
+> sender ID and conversation label is sent to the configured provider; history
+> and unrelated traffic are not. The database lives outside the repository and
+> `*.db` is gitignored, but be deliberate before sharing one, and remember that a
+> public mesh is not a private channel.
 
 ## How it works
 
-- `model.py` — normalized `Packet` / `Node` / `ChatMessage` types
+- `model.py` — normalized packets plus `ChannelRef`, `PeerRef`, and `SendReceipt`
 - `state.py` — `MeshState`: node database, packet ring buffer, chat log, stats
+- `service.py` — protocol-neutral state ownership, durable outbox, retries, receipts
 - `radio.py` — transports. `SerialLink` wraps the meshtastic library; `DemoLink`
   generates synthetic traffic so the UI runs without hardware.
+- `gateway.py` — unattended single-radio owner and local `0600` Unix-socket API
+- `bot.py` — opt-in, tool-free AI routing, rate limits, dedupe, and chunking
 - `store.py` — SQLite persistence, written on a background thread
 - `geo.py` — haversine, bearing and km-offset helpers
 - `crypto.py` — channel key expansion, the nonce, AES-CTR, and PSK grading
@@ -693,6 +828,8 @@ uv run python tests/test_crypto.py    # crypto pinned to upstream's test vectors
 uv run python tests/test_meshcore.py  # MeshCore mapping, no radio needed
 uv run python tests/test_admin_isolation.py  # admin input must never reach the mesh
 uv run python tests/test_admin_log.py        # admin log persists, credentials never stored
+uv run python tests/test_service.py          # restart, retry, expiry and ACK state
+uv run python tests/test_gateway_bot.py      # local socket, DM, bot dedupe and chunking
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

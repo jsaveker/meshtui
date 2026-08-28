@@ -23,7 +23,20 @@ import threading
 import time
 from typing import Any, Callable
 
-from .model import BROADCAST, DEFAULT_MAX_PAYLOAD, ChatMessage, Node, Packet, payload_bytes
+from .model import (
+    BROADCAST,
+    DEFAULT_MAX_PAYLOAD,
+    MESHCORE_MAX_PAYLOAD,
+    ChannelRef,
+    ChatMessage,
+    DeliveryStatus,
+    DestinationRef,
+    Node,
+    Packet,
+    PeerRef,
+    SendReceipt,
+    payload_bytes,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +129,11 @@ def max_payload_bytes() -> int:
         except Exception:  # noqa: BLE001 - library missing or renamed
             _MAX_PAYLOAD = DEFAULT_MAX_PAYLOAD
     return _MAX_PAYLOAD
+
+
+def protocol_payload_limit(protocol: str) -> int:
+    """Conservative UTF-8 payload ceiling for a single text frame."""
+    return MESHCORE_MAX_PAYLOAD if protocol == "meshcore" else max_payload_bytes()
 
 
 def permission_hint(port: str) -> str:
@@ -456,6 +474,26 @@ class RadioLink:
         some transports do not report one - so success is reported separately."""
         raise NotImplementedError
 
+    def send(self, text: str, destination: DestinationRef,
+             message_id: str) -> SendReceipt:
+        """Protocol-aware send API used by MeshService.
+
+        Links with asynchronous protocol receipts may override this.  The
+        compatibility implementation adapts the original send_text contract.
+        """
+        if isinstance(destination, PeerRef):
+            dest, channel = destination.node_id, 0
+        else:
+            dest, channel = BROADCAST, destination.index
+        accepted, protocol_id = self.send_text(text, dest=dest, channel=channel)
+        return SendReceipt(
+            message_id=message_id,
+            destination=destination,
+            status=DeliveryStatus.SENT if accepted else DeliveryStatus.FAILED,
+            protocol_id=protocol_id,
+            detail="accepted by radio" if accepted else "radio rejected message",
+        )
+
     def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         self.emit("error", "traceroute not supported by this link")
 
@@ -590,8 +628,11 @@ class MeshtasticLink(RadioLink):
         self.emit("node", node)
 
     @staticmethod
-    def _channel_names(interface: Any) -> list[str]:
-        names: list[str] = []
+    def _channel_names(interface: Any) -> list[tuple[int, str]]:
+        # Preserve the hardware slot.  Disabled slots can appear between live
+        # channels, so returning only names silently renumbers everything after
+        # a gap and sends to the wrong channel.
+        names: list[tuple[int, str]] = []
         try:
             channels = getattr(interface.localNode, "channels", None) or []
             for idx, ch in enumerate(channels):
@@ -600,10 +641,10 @@ class MeshtasticLink(RadioLink):
                 if role is not None and int(role) == 0:
                     continue
                 name = getattr(getattr(ch, "settings", None), "name", "") or ""
-                names.append(name or ("LongFast" if idx == 0 else f"ch{idx}"))
+                names.append((idx, name or ("LongFast" if idx == 0 else f"ch{idx}")))
         except Exception:  # noqa: BLE001
             pass
-        return names or ["LongFast"]
+        return names or [(0, "LongFast")]
 
     @staticmethod
     def _channel_security(interface: Any) -> list[dict[str, Any]]:

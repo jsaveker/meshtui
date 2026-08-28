@@ -60,15 +60,12 @@ async def main() -> int:
         chat_input.focus(); await pilot.pause(0.1)
         chat_input.value = "hello from the smoke test"
         await pilot.press("enter")
-        for _ in range(20):
-            await pilot.pause(0.2)
-            if any(m.outgoing and m.acked for m in app.state.chat):
-                break
+        await pilot.pause(0.3)
         sent = [m for m in app.state.chat if m.outgoing]
         if not sent:
             problems.append("outgoing message not recorded")
-        elif not any(m.acked for m in sent):
-            problems.append("outgoing message never acked")
+        elif sent[-1].delivery_status != "sent" or sent[-1].acked:
+            problems.append("channel broadcast was mislabeled as delivered")
 
         # slash commands, typed into the overlay input
         for cmd in ("/help", "/nodes", "/bogus", "/dm FLD yo there", "/trace RIDG", "/clear"):
@@ -77,6 +74,12 @@ async def main() -> int:
             await pilot.pause(0.2)
         if not any(m.outgoing and m.is_dm for m in app.state.chat):
             problems.append("/dm did not send a direct message")
+        for _ in range(20):
+            await pilot.pause(0.2)
+            if any(m.outgoing and m.is_dm and m.acked for m in app.state.chat):
+                break
+        if not any(m.outgoing and m.is_dm and m.acked for m in app.state.chat):
+            problems.append("direct message never acknowledged")
 
         # switching a channel in the overlay updates the shared target
         overlay = app.screen
