@@ -326,13 +326,11 @@ class MeshCoreLink(RadioLink):
         await self._load_contacts()
         await self._check_autoadd()
 
-        # Pull queued messages the radio buffered while nothing was attached.
-        try:
-            result = self.mc.start_auto_message_fetching()
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception:  # noqa: BLE001
-            log.debug("auto message fetching unavailable", exc_info=True)
+        # Drain anything the radio buffered while nothing was attached. The
+        # library's auto-fetch only reacts to *new* MESSAGES_WAITING events and
+        # never pulls the existing backlog, so a reconnecting client would miss
+        # every reply that arrived while it was away.
+        await self._drain_messages()
 
         # Announce ourselves so peers learn our key and can route back.
         try:
@@ -351,6 +349,26 @@ class MeshCoreLink(RadioLink):
             pass
 
     # --------------------------------------------------------------- events
+
+    async def _drain_messages(self, limit: int = 50) -> None:
+        """Pull queued messages until the radio says there are no more.
+
+        Each get_msg dispatches its message through the normal event handlers
+        (CHANNEL_MSG_RECV / CONTACT_MSG_RECV), so draining here is what makes an
+        incoming channel reply actually reach the chat.
+        """
+        from meshcore import EventType
+
+        for _ in range(limit):
+            try:
+                result = await self.mc.commands.get_msg(timeout=3)
+            except Exception:  # noqa: BLE001 - never let a poll kill the loop
+                log.debug("get_msg failed", exc_info=True)
+                return
+            etype = getattr(result, "type", None)
+            payload = getattr(result, "payload", None)
+            if etype == EventType.NO_MORE_MSGS or not payload:
+                return
 
     def _wire_events(self, EventType: Any) -> None:
         handlers = {
