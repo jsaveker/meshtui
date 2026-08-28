@@ -97,6 +97,9 @@ def _header(msg: ChatMessage, sender: str, state: MeshState,
     if msg.outgoing:
         marker, style = _delivery_marker(msg)
         header.append(f"  {marker}", style=style)
+        repeaters = getattr(msg, "repeated_by", None)
+        if repeaters:
+            header.append(f"  ⟳ {', '.join(sorted(repeaters))}", style="bright_blue")
     return header
 
 

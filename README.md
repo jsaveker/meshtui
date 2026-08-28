@@ -587,6 +587,21 @@ prints to stdout - both fatal in a TUI. The request is sent without waiting and 
 reply is rendered from the ordinary `TRACEROUTE_APP` packet that comes back, so the
 interface stays live. Replies can take 30 seconds or more.
 
+## Seeing a message repeated (MeshCore)
+
+When you send a message on a MeshCore channel, repeaters rebroadcast it and your
+own radio hears those rebroadcasts. meshtui ties each one back to your message and
+shows the repeaters next to it, the way the phone apps do:
+
+```
+ you  #Public   11:16  ✓  ⟳ Santaluz Solar Repeater, e422
+```
+
+A repeater is named when its public key is known (its path byte is the key's first
+byte); otherwise it shows as `0x<hex>`. The packet hash reported with each repeat
+is stable, so every repeater that carries the same message accumulates onto the one
+line — and a different packet on the same channel is never misattributed to it.
+
 ## Message length
 
 Meshtastic's limit comes from the installed protobuf's `DATA_PAYLOAD_LEN` (233

@@ -249,6 +249,11 @@ class ChatMessage:
     acked: bool = False
     message_id: str | None = None
     delivery_status: str = ""
+    # For our own channel messages: repeaters heard rebroadcasting it, and the
+    # packet hash that ties every repeat to this message. Populated live as the
+    # repeats arrive over the air, the way the phone apps show it.
+    repeated_by: set = field(default_factory=set)
+    repeat_pkt: int | None = None
 
     @property
     def is_dm(self) -> bool:

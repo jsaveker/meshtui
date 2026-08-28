@@ -109,6 +109,9 @@ class MeshService:
         self.default_ttl = default_ttl
         self.outbox: dict[str, OutboundMessage] = {}
         self._protocol_to_message: dict[str, str] = {}
+        # pkt_hash -> our outgoing message_id, so every repeat of the same
+        # packet accumulates onto the one message.
+        self._repeat_pkt_to_message: dict[int, str] = {}
         self._listeners: list[ServiceListener] = []
         self._lock = threading.RLock()
         self._load_outbox()
@@ -177,6 +180,8 @@ class MeshService:
                 self.state.channels = list(payload) or [(0, "Public")]
             elif kind == "mc_autoadd":
                 self.state.radio_info["autoadd"] = payload
+            elif kind == "mc_repeat":
+                result = self.note_repeat(payload)
             elif kind == "mc_login":
                 node_id, ok = payload
                 if ok:
@@ -185,6 +190,86 @@ class MeshService:
                     self.state.admin_sessions.discard(node_id)
             self._notify(kind, result)
             return result
+
+    REPEAT_WINDOW = 45.0  # seconds a repeat may lag our send before we ignore it
+
+    def note_repeat(self, info: dict[str, Any]):
+        """Attribute a heard rebroadcast to one of our sent channel messages.
+
+        pkt_hash is stable across every repeat of a packet, so the first repeat
+        anchors the association and later repeats (from other repeaters) just
+        add to the set. Before that anchor we match on channel + a short time
+        window, which is safe because we are only ever matching against our own
+        recently-sent messages.
+        """
+        pkt = info.get("pkt_hash")
+        path = [b for b in (info.get("path") or []) if b]
+        if not path:
+            return None
+        chan_hash = info.get("chan_hash") or ""
+        now = info.get("ts") or time.time()
+
+        msg = None
+        mid = self._repeat_pkt_to_message.get(pkt) if pkt is not None else None
+        if mid is not None:
+            msg = self._find_message(mid)
+        if msg is None:
+            msg = self._match_outgoing_channel(chan_hash, now)
+            if msg is not None and pkt is not None:
+                self._repeat_pkt_to_message[pkt] = msg.message_id
+                msg.repeat_pkt = pkt
+        if msg is None:
+            return None
+
+        before = len(msg.repeated_by)
+        for byte in path:
+            msg.repeated_by.add(self._repeater_label(byte))
+        if len(msg.repeated_by) != before:
+            self._notify("chat", msg)
+        return msg
+
+    def _find_message(self, message_id: str):
+        for m in reversed(self.state.chat):
+            if m.message_id == message_id:
+                return m
+        return None
+
+    def _channel_hash(self, index: int) -> str:
+        link = self.link
+        hashes = getattr(link, "channel_hashes", None) if link else None
+        return (hashes or {}).get(index, "")
+
+    def _match_outgoing_channel(self, chan_hash: str, now: float):
+        """Most recent outgoing channel message the repeat could belong to.
+
+        When the repeat names a channel hash and we know our channels' hashes,
+        require an exact match - never attribute a repeat to a message on a
+        different (or unconfirmable) channel. Only when we have no hashes at all
+        do we fall back to the time window alone.
+        """
+        link = self.link
+        known = bool(getattr(link, "channel_hashes", None)) if link else False
+        for m in reversed(self.state.chat):
+            if not m.outgoing or m.is_dm:
+                continue
+            if now - m.ts > self.REPEAT_WINDOW:
+                break  # chat is time-ordered; nothing older will match
+            # Already tied to a packet: only that exact pkt_hash may add to it
+            # (handled by the caller), so a different packet is not ours.
+            if m.repeat_pkt is not None:
+                continue
+            if chan_hash and known and self._channel_hash(m.channel) != chan_hash:
+                continue
+            return m
+        return None
+
+    def _repeater_label(self, byte: str) -> str:
+        """A path byte is the first byte of a repeater's public key, and a
+        node id is '!' + the key's first four bytes - so match on that byte."""
+        for node in self.state.nodes.values():
+            if node.node_id[1:3].lower() == byte.lower():
+                return node.name
+        return f"0x{byte}"
 
     def receive_node(self, raw: dict[str, Any]):
         try:

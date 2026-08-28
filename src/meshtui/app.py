@@ -492,6 +492,10 @@ class MeshTUI(App[None]):
             self.service.receive_contact(payload)
         elif kind == "mc_autoadd":
             self.state.radio_info["autoadd"] = payload
+        elif kind == "mc_repeat":
+            if self.service.note_repeat(payload) is not None:
+                self.query_one(ChatPane).rerender(self.state)
+                self._refresh_overlay()
         elif kind == "mc_channels":
             self.state.channels = list(payload) or [(0, "Public")]
             self.query_one(ChatPane).set_channels(self.state)

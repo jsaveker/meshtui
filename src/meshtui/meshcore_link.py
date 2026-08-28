@@ -78,6 +78,26 @@ def key_to_id(pubkey: Any) -> str:
     return f"!{text[:8].lower()}" if text else "!00000000"
 
 
+def _hex1(value: Any) -> str:
+    """Normalise a 1-byte hash to two lowercase hex chars."""
+    if isinstance(value, (bytes, bytearray)):
+        return value[:1].hex()
+    if isinstance(value, int):
+        return f"{value & 0xFF:02x}"
+    text = str(value or "").lower().replace("0x", "")
+    return text[-2:].rjust(2, "0") if text else ""
+
+
+def _split_path(path: Any, path_len: Any) -> list[str]:
+    """MeshCore path is path_len 1-byte repeater ids; return them as hex."""
+    if isinstance(path, (bytes, bytearray)):
+        raw = path.hex()
+    else:
+        raw = str(path or "").lower().replace("0x", "")
+    bytes_hex = [raw[i:i + 2] for i in range(0, len(raw), 2)]
+    return [b for b in bytes_hex if len(b) == 2]
+
+
 def key_to_num(pubkey: Any) -> int:
     try:
         return int(key_to_id(pubkey)[1:], 16)
@@ -201,6 +221,9 @@ class MeshCoreLink(RadioLink):
         self.contacts: dict[str, dict[str, Any]] = {}
         self.channels: list[tuple[int, str]] = []
         self.channel_secrets: dict[int, Any] = {}
+        # channel index -> its 1-byte hash (hex), for matching a
+        # repeat's chan_hash back to the channel it belongs to.
+        self.channel_hashes: dict[int, str] = {}
         # Replaced from the device query; 40 on current firmware.
         self.max_channels: int = 8
         self.logged_in: set[str] = set()
@@ -485,6 +508,18 @@ class MeshCoreLink(RadioLink):
                      f"rx {data.get('payload_len', '?')}B",
                      snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
                      raw=data)
+        # A repeated group-text is our (or someone's) channel message being
+        # rebroadcast. The path lists the repeaters that carried it and pkt_hash
+        # ties every repeat of the same packet together.
+        if data.get("payload_typename") == "GRP_TXT":
+            path = _split_path(data.get("path"), data.get("path_len"))
+            if path:
+                self.emit("mc_repeat", {
+                    "chan_hash": _hex1(data.get("chan_hash")),
+                    "pkt_hash": data.get("pkt_hash"),
+                    "path": path,
+                    "ts": time.time(),
+                })
 
     def _attribute(self, data: dict[str, Any], fallback: str | None) -> str:
         """Whose reply is this? Prefer the payload, fall back to who we asked."""
@@ -591,6 +626,7 @@ class MeshCoreLink(RadioLink):
         """
         found: list[tuple[int, str]] = []
         self.channel_secrets.clear()
+        self.channel_hashes.clear()
         for index in range(self.max_channels):
             try:
                 result = await self.mc.commands.get_channel(index)
@@ -604,6 +640,9 @@ class MeshCoreLink(RadioLink):
                 continue
             found.append((index, name or f"channel {index}"))
             self.channel_secrets[index] = secret
+            chash = data.get("channel_hash")
+            if chash is not None:
+                self.channel_hashes[index] = _hex1(chash)
         self.channels = found or [(0, "Public")]
         self.emit("mc_channels", list(self.channels))
 
