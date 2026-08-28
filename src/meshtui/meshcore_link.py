@@ -243,28 +243,41 @@ class MeshCoreLink(RadioLink):
         self.emit("status", f"opening {self.port} ...")
         return await MeshCore.create_serial(self.port or "")
 
+    def _connect_error(self, exc: Exception | None) -> str:
+        where = self.host or self.ble or self.port or "the radio"
+        text = str(exc or "").strip()
+        # A broken pipe / errno on RTS toggle means the USB CDC is wedged - a
+        # replug resets it. ESP32-S3 native-USB nodes hit this after an unclean
+        # exit.
+        if isinstance(exc, (BrokenPipeError, OSError)) or "broken pipe" in text.lower():
+            return (f"lost the USB link to {where}. Unplug and replug the radio to "
+                    f"reset its USB, then reopen meshtui.")
+        detail = f": {text}" if text else ""
+        return f"could not connect to the meshcore radio on {where}{detail}"
+
     async def _run(self) -> None:
         from meshcore import EventType
 
         try:
             self.mc = await self._connect()
         except Exception as exc:  # noqa: BLE001
-            self.emit("error", f"could not connect to meshcore radio: {exc}")
+            self.emit("error", self._connect_error(exc))
+            return
+        if self.mc is None:
+            self.emit("error", self._connect_error(None))
             return
 
         self._wire_events(EventType)
         self.connected = True
-        # Ask the device how many channel slots it actually has before
-        # scanning them; firmware allows far more than the old hard-coded 8.
-        try:
-            query = self._payload(await self.mc.commands.send_device_query())
-            self.max_channels = int(query.get("max_channels") or self.max_channels)
-        except Exception:  # noqa: BLE001
-            pass
-        # Channels first: announcing with an empty list and then filling it in
-        # would leave two concurrent Tabs rebuilds racing each other.
-        await self._load_channels(announce=False)
+        # Announce first so the UI leaves "connecting" immediately. The channel
+        # scan below can be dozens of slow serial round-trips, and it used to
+        # sit in front of this - which looked like a hang. The old reason for
+        # scanning first (a Tabs rebuild race) is gone: the corner pane is now a
+        # monitor and the overlay rebuilds its list safely, so channels can
+        # arrive a moment later via mc_channels.
         await self._announce()
+        self.emit("status", "loading channels...")
+        await self._load_channels()
         await self._load_contacts()
         await self._check_autoadd()
 
@@ -459,8 +472,9 @@ class MeshCoreLink(RadioLink):
         info = dict(self.mc.self_info or {})
         self.my_node_id = key_to_id(info.get("public_key"))
         try:
-            query = await self.mc.commands.send_device_query()
-            info.update(self._payload(query))
+            query = self._payload(await self.mc.commands.send_device_query())
+            info.update(query)
+            self.max_channels = int(query.get("max_channels") or self.max_channels)
         except Exception:  # noqa: BLE001
             pass
         where = self.host or self.ble or self.port or "?"
@@ -507,7 +521,7 @@ class MeshCoreLink(RadioLink):
                       "advert and never learns anyone's public key. Direct messages "
                       "to it cannot be decrypted and will fail. Press 'A' to enable it.")
 
-    async def _load_channels(self, announce: bool = True) -> None:
+    async def _load_channels(self) -> None:
         """Read every channel slot the device has.
 
         Slots are not contiguous - a device can have channels at 0, 5 and 12 -
@@ -530,10 +544,7 @@ class MeshCoreLink(RadioLink):
             found.append((index, name or f"channel {index}"))
             self.channel_secrets[index] = secret
         self.channels = found or [(0, "Public")]
-        # The initial load must not emit: the connect payload already carries
-        # these, and two concurrent tab rebuilds collide on duplicate ids.
-        if announce:
-            self.emit("mc_channels", list(self.channels))
+        self.emit("mc_channels", list(self.channels))
 
     # ------------------------------------------------------------- commands
 
