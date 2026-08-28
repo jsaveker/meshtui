@@ -144,7 +144,10 @@ class AdminScreen(Screen[None]):
         self.query_one("#admin-status", Static).update(line)
 
     def _poll(self) -> None:
-        """Drain new CLI output. Replies arrive over RF, so they trickle in."""
+        """Drain new session output, including anything restored from disk.
+
+        Replies arrive over RF, so they trickle in well after the command.
+        """
         log = self.query_one("#admin-log", RichLog)
         entries = list(self.state.cli_log)
         for ts, node_id, text in entries[self._seen:]:
@@ -186,6 +189,8 @@ class AdminScreen(Screen[None]):
         if text.lower().startswith("login "):
             password = text.split(" ", 1)[1]
             log.write(Text(f"> login to {name} ...", style="bright_cyan"))
+            # Never the password itself, in the log or on disk.
+            self.app.record_admin(self.target, "> login")
             self.link.login(self.target, password)
             return
         if self.target not in self.state.admin_sessions:
@@ -193,6 +198,7 @@ class AdminScreen(Screen[None]):
             return
 
         log.write(Text(f"> {text}", style="bright_cyan"))
+        self.app.record_admin(self.target, f"> {text}")
         self.link.remote_command(self.target, text)
 
     def action_status(self) -> None:

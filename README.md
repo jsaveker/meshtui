@@ -198,6 +198,11 @@ no climbing onto the roof.
  ╰────────────────────────╯╰────────────────────────────────────────╯
 ```
 
+The session log persists across restarts, scoped to the radio that ran it, so a
+reply that arrives after you have closed meshtui is still there next time.
+**Credentials are never written down**: anything typed after `login` or `password`
+is redacted before it reaches memory or disk.
+
 Select a repeater, type `login <password>`, then send commands. `F2` requests
 status, `F3` telemetry, `F4` logs out. Replies travel over LoRa, so they take
 seconds and can be lost — the session log shows exactly what came back.
@@ -646,6 +651,7 @@ uv run python tests/smoke.py    # headless end-to-end run against the demo mesh
 uv run python tests/test_crypto.py    # crypto pinned to upstream's test vectors
 uv run python tests/test_meshcore.py  # MeshCore mapping, no radio needed
 uv run python tests/test_admin_isolation.py  # admin input must never reach the mesh
+uv run python tests/test_admin_log.py        # admin log persists, credentials never stored
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

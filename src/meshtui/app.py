@@ -35,6 +35,26 @@ from .widgets.stats import StatsPane, fmt_duration
 
 FEED_RESTORE_ROWS = 400
 
+# Verbs whose argument is a credential and must never be written down.
+SECRET_VERBS = ("login", "password", "passwd", "pass")
+
+
+def redact_command(text: str) -> str:
+    """Keep the verb, drop the secret.
+
+    The admin log is persisted, so a password typed here would otherwise
+    outlive the session on disk. The log echoes commands as "> login secret",
+    so the verb can be the second token as well as the first.
+    """
+    parts = text.split()
+    if not parts:
+        return text
+    start = 1 if parts[0] == ">" and len(parts) > 1 else 0
+    verb = parts[start].lower().lstrip("/")
+    if verb in SECRET_VERBS and len(parts) > start + 1:
+        return " ".join(parts[:start + 1] + ["<redacted>"])
+    return text
+
 HELP = """
 /dm <node> <text>   send a direct message (node = short name or !id)
 /trace <node>       request a traceroute
@@ -358,6 +378,8 @@ class MeshTUI(App[None]):
                     pass
             seen += 1
         self._restore_aggregates()
+        for stamp, node_id, text in store.recent_admin_log():
+            self.state.cli_log.append((stamp, node_id, text))
         if seen:
             self.note(f"restored {seen} observations for "
                       f"{self.state.node_name(store.local_node or '')}", "grey70")
@@ -478,17 +500,17 @@ class MeshTUI(App[None]):
             else:
                 self.state.admin_sessions.discard(node_id)
                 self.note(f"login refused by {self.state.node_name(node_id)}", "red")
-            self.state.cli_log.append(
-                (time.time(), node_id, "** logged in **" if ok else "** login refused **"))
+            self.record_admin(node_id,
+                              "** logged in **" if ok else "** login refused **")
         elif kind == "mc_cli":
             node_id, text = payload
-            self.state.cli_log.append((time.time(), node_id, text))
+            self.record_admin(node_id, text)
         elif kind == "mc_status":
             node_id, data = payload
-            self.state.cli_log.append((time.time(), node_id, f"status: {data}"))
+            self.record_admin(node_id, f"status: {data}")
         elif kind == "mc_telemetry":
             node_id, data = payload
-            self.state.cli_log.append((time.time(), node_id, f"telemetry: {data}"))
+            self.record_admin(node_id, f"telemetry: {data}")
         elif kind == "status":
             self.note(str(payload))
         elif kind == "error":
@@ -502,6 +524,18 @@ class MeshTUI(App[None]):
         self.note(message.split(".")[0][:80], "red")
         for i, line in enumerate(textwrap.wrap(message, width)):
             feed.write_notice(("! " if i == 0 else "  ") + line, "bold red")
+
+    def record_admin(self, node_id: str, text: str) -> None:
+        """Append to the remote-admin session log, in memory and on disk.
+
+        Redaction happens here as well as at the call site, so no path can put
+        a credential into a file.
+        """
+        safe = redact_command(text)
+        stamp = time.time()
+        self.state.cli_log.append((stamp, node_id, safe))
+        if self.store is not None and self.store.enabled:
+            self.store.add_admin_log(stamp, node_id, safe)
 
     def _show_traceroute(self, packet: Packet) -> None:
         """Write a readable route, with per-hop signal in both directions."""

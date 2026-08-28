@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
 
+CREATE TABLE IF NOT EXISTS admin_log (
+    rowid_      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    local_node  TEXT,
+    node_id     TEXT,
+    text        TEXT
+);
+CREATE INDEX IF NOT EXISTS admin_log_ts ON admin_log(ts);
+
 CREATE TABLE IF NOT EXISTS node_obs (
     local_node  TEXT NOT NULL,
     node_id     TEXT NOT NULL,
@@ -497,6 +506,17 @@ class Store:
              ch.snr_min, ch.snr_max, ch.hops_min, ch.hops_max, ch.key_label, ch.sample),
         )
 
+    def add_admin_log(self, ts: float, node_id: str, text: str) -> None:
+        """Record one line of a remote-admin session.
+
+        Callers are responsible for redaction; nothing here should ever hold a
+        password.
+        """
+        self._put(
+            "INSERT INTO admin_log (ts, local_node, node_id, text) VALUES (?,?,?,?)",
+            (ts, self.local_node, node_id, text),
+        )
+
     def set_meta(self, key: str, value: Any) -> None:
         self._put(
             "INSERT INTO meta (key, value) VALUES (?,?)"
@@ -586,6 +606,14 @@ class Store:
             }
             out.append(record)
         return out
+
+    def recent_admin_log(self, limit: int = 400) -> list[tuple[float, str, str]]:
+        rows = self._read(
+            "SELECT * FROM (SELECT * FROM admin_log WHERE local_node IS ?"
+            " ORDER BY rowid_ DESC LIMIT ?) ORDER BY rowid_ ASC",
+            (self.local_node, limit),
+        )
+        return [(r["ts"], r["node_id"] or "", r["text"] or "") for r in rows]
 
     def load_node_observations(self) -> dict[str, dict[str, Any]]:
         """This observer's view of every node it has heard."""
