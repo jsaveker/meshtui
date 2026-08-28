@@ -579,8 +579,13 @@ relay counts, foreign channels and movement trails. None of those are stored per
 node, so without the replay they would start empty after every restart even though
 the packets were safely on disk.
 
-The replay reads and decodes on a worker thread and takes well under a second for a
-few thousand packets. Replayed packets are marked historical: they rebuild state but
+Replay rebuilds each packet from its stored **columns**, not by re-decoding the raw
+payload — the columns already hold everything the UI renders, and a decoder only
+understands its own protocol. Re-running the Meshtastic decoder over MeshCore rows
+turned every one into `? -> ? UNKNOWN`.
+
+The replay reads on a worker thread and takes well under a second for a few
+thousand packets. Replayed packets are marked historical: they rebuild state but
 do not inflate this session's packet counter or per-node totals. Tune with
 `--restore-limit N`, or `--restore-limit 0` to skip it.
 

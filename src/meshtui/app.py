@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 import time
 from typing import Any
@@ -200,13 +201,45 @@ class MeshTUI(App[None]):
                 "grey70",
             )
 
+    @staticmethod
+    def _packet_from_row(row: dict[str, Any]) -> Packet:
+        """Rebuild a Packet from its stored columns.
+
+        Protocol-agnostic on purpose: the columns already hold everything the
+        UI renders, so replay does not need to know whether a Meshtastic or a
+        MeshCore radio produced the row.
+        """
+        try:
+            raw = json.loads(row.get("raw") or "{}")
+        except Exception:  # noqa: BLE001
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        portnum = row.get("portnum") or "UNKNOWN"
+        return Packet(
+            ts=float(row.get("ts") or 0.0),
+            from_id=row.get("from_id") or "?",
+            to_id=row.get("to_id") or "?",
+            portnum=portnum,
+            summary=row.get("summary") or "",
+            channel=int(row.get("channel") or 0),
+            snr=row.get("snr"),
+            rssi=row.get("rssi"),
+            hops=row.get("hops"),
+            packet_id=row.get("packet_id"),
+            encrypted=portnum == "ENCRYPTED",
+            relay_node=raw.get("relayNode"),
+            via_mqtt=bool(raw.get("viaMqtt")),
+            raw=raw,
+        )
+
     def _replay_worker(self) -> None:
-        """Read and decode stored packets off the UI thread."""
+        """Read stored packets off the UI thread."""
         packets = []
         try:
-            for raw in self.store.recent_packets(self.restore_limit):  # type: ignore[union-attr]
+            for row in self.store.recent_packets(self.restore_limit):  # type: ignore[union-attr]
                 try:
-                    packets.append(flatten(raw))
+                    packets.append(self._packet_from_row(row))
                 except Exception:  # noqa: BLE001 - one bad row must not stop the rest
                     continue
         except Exception as exc:  # noqa: BLE001

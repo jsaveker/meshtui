@@ -139,6 +139,41 @@ check("colons tolerated", parse_secret("00:11:22:33:44:55:66:77:88:99:aa:bb:cc:d
 check("wrong length rejected", parse_secret("00112233"), None)
 check("non-hex rejected", parse_secret("z" * 32), None)
 
+print("\nstored packets replay without knowing the protocol")
+# Replay used to re-run Meshtastic's decoder over stored rows, which turned
+# every MeshCore packet into "? -> ? UNKNOWN" on startup.
+from meshtui.app import MeshTUI
+import json as _json
+
+mc_row = {
+    "ts": 1787880000.0, "from_id": "!bc20c203", "to_id": "^all",
+    "portnum": "ADVERT_APP", "channel": 0, "snr": 11.5, "rssi": -56,
+    "hops": None, "packet_id": None, "summary": "advert from !bc20c203",
+    "raw": _json.dumps({"adv_name": "Santaluz Solar Repeater"}),
+}
+p1 = MeshTUI._packet_from_row(mc_row)
+check("meshcore portnum survives", p1.portnum, "ADVERT_APP")
+check("meshcore sender survives", p1.from_id, "!bc20c203")
+check("meshcore summary survives", p1.summary, "advert from !bc20c203")
+check("meshcore snr survives", p1.snr, 11.5)
+
+mt_row = {
+    "ts": 1787880001.0, "from_id": "!5b1bf491", "to_id": "^all",
+    "portnum": "POSITION_APP", "channel": 0, "snr": 6.25, "rssi": -67,
+    "hops": 2, "packet_id": 4242, "summary": "30.34, -97.92",
+    "raw": _json.dumps({"relayNode": 145, "viaMqtt": True}),
+}
+p2 = MeshTUI._packet_from_row(mt_row)
+check("meshtastic relay byte survives", p2.relay_node, 145)
+check("meshtastic mqtt flag survives", p2.via_mqtt, True)
+check("meshtastic hops survive", p2.hops, 2)
+check("meshtastic packet id survives", p2.packet_id, 4242)
+
+broken = MeshTUI._packet_from_row({"ts": 1.0, "portnum": "ENCRYPTED", "raw": "not json"})
+check("unparseable raw does not crash replay", broken.portnum, "ENCRYPTED")
+check("encrypted flag derived", broken.encrypted, True)
+check("missing sender falls back", broken.from_id, "?")
+
 print("\nrepeater console output is not chat")
 # send_cmd travels as a text message tagged CLI_DATA, and so does the reply -
 # the tag is the only thing separating console output from someone saying hello.

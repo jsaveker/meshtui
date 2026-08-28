@@ -535,24 +535,19 @@ class Store:
         ]
 
     def recent_packets(self, limit: int = 3000) -> list[dict[str, Any]]:
-        """The most recent raw packets, oldest first, for rebuilding state.
+        """The most recent stored packet ROWS, oldest first.
 
-        Derived state - SNR history, sensor readings, relay counts - is not
-        stored per node; it is rebuilt by replaying these through the same
-        code path live packets take.
+        Rows rather than raw payloads: every field needed to rebuild a Packet
+        is already a column, and re-decoding the raw payload would need to know
+        which protocol produced it. Meshtastic's decoder applied to a MeshCore
+        packet yields "? -> ? UNKNOWN" for every row.
         """
         rows = self._read(
-            "SELECT raw FROM (SELECT rowid_, raw FROM packets WHERE local_node IS ?"
+            "SELECT * FROM (SELECT * FROM packets WHERE local_node IS ?"
             " ORDER BY rowid_ DESC LIMIT ?) ORDER BY rowid_ ASC",
             (self.local_node, limit),
         )
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                out.append(json.loads(row["raw"]))
-            except Exception:  # noqa: BLE001 - skip anything unparseable
-                continue
-        return out
+        return [dict(row) for row in rows]
 
     def known_nodes(self) -> list[dict[str, Any]]:
         """Node records shaped like meshtastic NodeDB entries, for upsert_node."""
