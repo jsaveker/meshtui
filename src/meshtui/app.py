@@ -11,6 +11,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Input, Static
 
 from .model import (BROADCAST, ChannelRef, ChatMessage, DeliveryStatus, Packet,
@@ -633,9 +634,14 @@ class MeshTUI(App[None]):
 
     def _tick(self) -> None:
         self.service.process_outbox()
-        self.query_one(NodeTable).render_state(self.state)
-        self.query_one(StatsPane).render_state(self.state)
-        self._render_status()
+        # The periodic tick can fire while the app is tearing down, after the
+        # base-screen widgets have been removed; skip rather than raise.
+        try:
+            self.query_one(NodeTable).render_state(self.state)
+            self.query_one(StatsPane).render_state(self.state)
+            self._render_status()
+        except NoMatches:
+            pass
 
     def note(self, text: str, style: str = "grey70") -> None:
         self._status_note = (text, style)
