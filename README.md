@@ -102,13 +102,14 @@ you hear directly:
 The TUI is for sitting in front of. To leave a node **receiving, storing and
 relaying for days**, run the headless **gateway** instead — it owns the radio,
 reconnects on its own if the link drops, and has no UI that can hang. Clients
-(the CLI, and a future attached TUI) talk to it over a local socket.
+(the CLI, and the TUI itself) talk to it over a local socket.
 
 ```sh
 meshtui gateway                 # foreground: owns the radio, prints a socket path
 meshtui gateway-status          # ask the running gateway how it is doing
 meshtui send channel 0 "hi"     # queue a message through it
 meshtui send dm <node> "hi"
+meshtui --gateway               # full TUI attached to the gateway's live stream
 ```
 
 For true days-long operation, run it under **systemd** so any crash restarts
@@ -123,9 +124,14 @@ systemctl --user status meshtui-gateway
 journalctl --user -u meshtui-gateway -f
 ```
 
-Only one process can hold the radio, so stop the gateway before launching the
-TUI on the same node (`systemctl --user stop meshtui-gateway`), or point the TUI
-at a *different* radio.
+Only one process can hold the radio — and with a gateway running, nothing else
+needs to. `meshtui --gateway` attaches the full TUI to the gateway's socket
+instead of opening a radio: the gateway streams every event (packets, chat,
+nodes, connection state) to it as JSON lines, replays a catch-up snapshot on
+connect, and accepts its sends. The TUI can start, quit, crash and reconnect
+freely while the gateway keeps the radio alive; several TUIs can even watch the
+same gateway at once. The gateway stays the only writer of the database, so an
+attached TUI ignores `--db`.
 
 ### What makes it survive
 
@@ -363,6 +369,9 @@ meshtui send dm --to '!2935ec59' \
 
 # Inspect the unattended process
 meshtui gateway-status
+
+# Watch it live: the TUI as a gateway client, no radio access needed
+meshtui --gateway
 ```
 
 The send command records one logical message in SQLite before touching the
@@ -861,7 +870,9 @@ sqlite3 ~/.local/share/meshtui/mesh.db \
 - `service.py` — protocol-neutral state ownership, durable outbox, retries, receipts
 - `radio.py` — transports. `SerialLink` wraps the meshtastic library; `DemoLink`
   generates synthetic traffic so the UI runs without hardware.
-- `gateway.py` — unattended single-radio owner and local `0600` Unix-socket API
+- `gateway.py` — unattended single-radio owner, local `0600` Unix-socket API,
+  per-client event streaming, and `GatewayLink` (the TUI's attach-to-gateway link)
+- `events.py` — JSON wire encoding for streamed events, and back into typed payloads
 - `bot.py` — opt-in, tool-free AI routing, rate limits, dedupe, and chunking
 - `store.py` — SQLite persistence, written on a background thread
 - `geo.py` — haversine, bearing and km-offset helpers
@@ -886,6 +897,7 @@ uv run python tests/test_admin_isolation.py  # admin input must never reach the 
 uv run python tests/test_admin_log.py        # admin log persists, credentials never stored
 uv run python tests/test_service.py          # restart, retry, expiry and ACK state
 uv run python tests/test_gateway_bot.py      # local socket, DM, bot dedupe and chunking
+uv run python tests/test_gateway_stream.py   # event streaming and the attached TUI's link
 uv run python tests/live.py 30  # connect to real hardware and report what it sees
 ```
 

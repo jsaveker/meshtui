@@ -16,6 +16,7 @@ from textual.widgets import DataTable, Footer, Input, Static
 
 from .model import (BROADCAST, ChannelRef, ChatMessage, DeliveryStatus, Packet,
                     PeerRef, outgoing_payload, payload_bytes)
+from .gateway import GatewayLink
 from .meshcore_link import MeshCoreLink, probe_meshcore
 from .radio import (DemoLink, RadioLink, SerialLink, TCPLink,
                     find_serial_ports, protocol_payload_limit,
@@ -98,7 +99,8 @@ class MeshTUI(App[None]):
 
     def __init__(self, port: str | None = None, demo: bool = False,
                  store: Store | None = None, restore_limit: int = 3000,
-                 host: str | None = None, protocol: str = "auto") -> None:
+                 host: str | None = None, protocol: str = "auto",
+                 gateway: str | None = None) -> None:
         super().__init__()
         self.service = MeshService(store)
         self.state = self.service.state
@@ -107,6 +109,7 @@ class MeshTUI(App[None]):
         self.port = port
         self.host = host
         self.protocol = protocol
+        self.gateway = gateway
         self.demo = demo
         self.store = store
         self.restore_limit = restore_limit
@@ -160,6 +163,12 @@ class MeshTUI(App[None]):
         self._start_link()
 
     def _start_link(self) -> None:
+        if self.gateway is not None:
+            # Attach to a running gateway: it owns the radio and the database,
+            # this process just renders the stream and sends through it.
+            self.link = GatewayLink(self._emit, self.gateway or None)
+            self.link.start()
+            return
         if self.demo:
             self.link = DemoLink(self._emit)
             self.run_worker(self.link.start, thread=True, name="radio-connect")
@@ -475,6 +484,8 @@ class MeshTUI(App[None]):
             self.service.receive_node(payload)
         elif kind == "chat":
             self._on_chat(payload)
+        elif kind == "chat_update":
+            self._on_chat_update(payload)
         elif kind == "connected":
             self._on_connected(payload)
         elif kind == "lost":
@@ -604,6 +615,25 @@ class MeshTUI(App[None]):
         self._refresh_overlay()
         if not message.outgoing:
             self.bell()
+
+    def _on_chat_update(self, message: ChatMessage) -> None:
+        """A gateway re-sent a message we already rendered (our own send echoed
+        back, or its delivery/repeater facts changed): merge, never append."""
+        if not message.message_id:
+            return
+        for existing in reversed(self.state.chat):
+            if existing.message_id != message.message_id:
+                continue
+            if message.delivery_status:
+                existing.delivery_status = message.delivery_status
+            existing.acked = existing.acked or message.acked
+            existing.repeated_by |= message.repeated_by
+            if message.packet_id is not None:
+                existing.packet_id = message.packet_id
+            self.query_one(ChatPane).rerender(self.state)
+            self._refresh_overlay()
+            return
+        self._on_chat(message)  # never rendered here after all
 
     def _refresh_overlay(self) -> None:
         """Keep the pop-out in step when it happens to be open."""

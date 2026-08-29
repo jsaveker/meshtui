@@ -273,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--demo", action="store_true", help="run against a synthetic mesh")
     parser.add_argument(
+        "--gateway", nargs="?", const="", metavar="SOCKET",
+        help="attach to a running 'meshtui gateway' over its Unix socket instead of "
+             "opening a radio (with no SOCKET, uses the default socket path)",
+    )
+    parser.add_argument(
         "--protocol", choices=("auto", "meshtastic", "meshcore"), default="auto",
         help="mesh protocol to speak (default: auto - probes the radio)",
     )
@@ -356,7 +361,17 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.CRITICAL, handlers=[logging.NullHandler()])
 
     store: Store | None = None
-    if not args.no_store:
+    if args.gateway is not None:
+        # The gateway is the only writer of the database and the only owner of
+        # the radio; this process gets everything over the socket instead.
+        if args.port or args.host or args.demo:
+            print("--gateway replaces the radio; drop --port/--host/--demo",
+                  file=sys.stderr)
+            return 2
+        if args.db or args.no_store:
+            print("note: --gateway ignores --db/--no-store; the gateway owns the database",
+                  file=sys.stderr)
+    elif not args.no_store:
         store = Store(args.db)
         if not store.open():
             print(f"warning: {store.error}", file=sys.stderr)
@@ -367,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         MeshTUI(port=args.port, demo=args.demo, store=store,
                 restore_limit=max(0, args.restore_limit), host=args.host,
-                protocol=args.protocol).run()
+                protocol=args.protocol, gateway=args.gateway).run()
     finally:
         if store is not None:
             store.close()

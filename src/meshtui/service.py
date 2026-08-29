@@ -118,6 +118,15 @@ class MeshService:
 
     # ------------------------------------------------------------ lifecycle
 
+    @property
+    def lock(self) -> threading.RLock:
+        """The lock every event and send path holds while mutating state.
+
+        Holding it makes a multi-part snapshot atomic: no event can be
+        processed (and no listener notified) part-way through.
+        """
+        return self._lock
+
     def attach_link(self, link: RadioLink | None) -> None:
         self.link = link
 
@@ -415,6 +424,9 @@ class MeshService:
         with self._lock:
             outbound = self.outbox.get(receipt.message_id)
             if outbound is None:
+                # Not ours to retry (e.g. a gateway client hearing about another
+                # client's send), but a rendered copy still deserves the status.
+                self._update_chat(receipt)
                 return receipt
             if outbound.status in (DeliveryStatus.DELIVERED, DeliveryStatus.EXPIRED) \
                     and receipt.status != outbound.status:
