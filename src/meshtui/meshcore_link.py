@@ -70,6 +70,7 @@ PORT_TRACE = "TRACEROUTE_APP"
 PORT_CLI = "ADMIN_APP"
 PORT_STATUS = "STATUS_APP"
 PORT_RXLOG = "RXLOG_APP"
+PORT_NEIGHBOURS = "NEIGHBORINFO_APP"
 
 
 def key_to_id(pubkey: Any) -> str:
@@ -364,10 +365,15 @@ class MeshCoreLink(RadioLink):
         # and treat repeated get_msg failures as a dead radio, so the caller's
         # reconnect logic takes over instead of the link spinning forever.
         last_drain = 0.0
+        last_battery = 0.0
         failures = 0
         while not self._stopping.is_set() and self.connected:
             await asyncio.sleep(0.5)
             now = time.time()
+            if now - last_battery >= 300:
+                last_battery = now
+                await self._read_battery()
+                await self._read_radio_stats()
             if now - last_drain >= 2.5:
                 last_drain = now
                 if await self._drain_messages():
@@ -443,12 +449,12 @@ class MeshCoreLink(RadioLink):
     def _packet(self, portnum: str, from_id: str, summary: str, *,
                 to_id: str = BROADCAST, snr: float | None = None,
                 rssi: int | None = None, hops: int | None = None,
-                channel: int = 0,
+                channel: int = 0, relay_node: int | None = None,
                 raw: dict[str, Any] | None = None) -> None:
         self.emit("packet", Packet(
             ts=time.time(), from_id=from_id, to_id=to_id, portnum=portnum,
             summary=summary, channel=channel, snr=snr, rssi=rssi, hops=hops,
-            raw=raw or {},
+            relay_node=relay_node, raw=raw or {},
         ))
 
     @staticmethod
@@ -470,7 +476,12 @@ class MeshCoreLink(RadioLink):
     # -------------------------------------------------------------- handlers
 
     def _on_advert(self, event: Any) -> None:
-        data = self._remember_contact(self._payload(event))
+        data = self._payload(event)
+        # The push notification carries only the sender's key, but the radio
+        # heard this advert just now - which is exactly what last-heard means,
+        # and unlike the contact record's last_advert it is our own clock.
+        data.setdefault("last_advert", time.time())
+        data = self._remember_contact(data)
         node_id = key_to_id(data.get("public_key") or data.get("pubkey"))
         self.emit("mc_contact", data)
         self._packet(PORT_ADVERT, node_id,
@@ -564,10 +575,43 @@ class MeshCoreLink(RadioLink):
 
     def _on_rx_log(self, event: Any) -> None:
         data = self._payload(event)
-        self._packet(PORT_RXLOG, key_to_id(data.get("pubkey_prefix") or ""),
-                     f"rx {data.get('payload_len', '?')}B",
-                     snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
-                     raw=data)
+        from_id = key_to_id(data.get("adv_key") or data.get("pubkey_prefix") or "")
+        kind = str(data.get("payload_typename") or "rx").lower()
+        summary = f"rf {kind} {data.get('payload_length', '?')}B"
+        snr = self._signal(data, "snr")
+        rssi = self._signal(data, "rssi")
+        # The last byte of the path is the repeater that actually delivered
+        # this packet to us, and the frame's SNR/RSSI measure that link - the
+        # per-relay signal attribution the relays view is built on.
+        relay = None
+        path = data.get("path") or ""
+        if path and data.get("path_hash_size", 1) == 1:
+            try:
+                relay = int(path[-2:], 16)
+            except ValueError:
+                relay = None
+        hops = None
+        if data.get("adv_key"):
+            # The RF log decodes a heard advert completely: sender key, name,
+            # position - and, unlike the contact record, the receive-side
+            # SNR/RSSI. This is the only place MeshCore ties signal quality to
+            # a sender, so it is what populates the node table's SNR column.
+            # A flood advert's path grows one byte per repeater, making
+            # path_len the hop count (0 = heard direct).
+            if data.get("route_typename") in ("FLOOD", "TC_FLOOD"):
+                path_len = data.get("path_len")
+                hops = path_len if isinstance(path_len, int) and path_len >= 0 else None
+            contact: dict[str, Any] = {"public_key": data["adv_key"],
+                                       "last_advert": time.time()}
+            for field in ("adv_name", "adv_lat", "adv_lon", "adv_type"):
+                if data.get(field) is not None:
+                    contact[field] = data[field]
+            self.emit("mc_contact", self._remember_contact(contact))
+            summary = f"advert from {data.get('adv_name') or from_id} (rf)"
+            if hops:
+                summary += f" via {hops} hop{'s' if hops > 1 else ''}"
+        self._packet(PORT_RXLOG, from_id, summary, snr=snr, rssi=rssi,
+                     hops=hops, relay_node=relay, raw=data)
         # A repeated group-text is our (or someone's) channel message being
         # rebroadcast. The path lists the repeaters that carried it and pkt_hash
         # ties every repeat of the same packet together.
@@ -621,6 +665,39 @@ class MeshCoreLink(RadioLink):
         self.emit("lost", "meshcore radio disconnected")
 
     # ----------------------------------------------------------- connection
+
+    async def _read_battery(self) -> None:
+        """The radio's own battery: MeshCore's get_bat reports millivolts."""
+        if not self.my_node_id.startswith("!"):
+            return
+        try:
+            event = await asyncio.wait_for(self.mc.commands.get_bat(), timeout=5)
+        except Exception:  # noqa: BLE001 - battery is decoration, never health
+            log.debug("get_bat failed", exc_info=True)
+            return
+        data = self._payload(event)
+        level = data.get("level") if isinstance(data, dict) else None
+        if not level:
+            return
+        self.emit("node", {"id": self.my_node_id,
+                           "deviceMetrics": {"voltage": round(level / 1000, 2)}})
+
+    async def _read_radio_stats(self) -> None:
+        """Local RF statistics over USB - noise floor, last SNR/RSSI, airtime.
+
+        A local query, so polling it costs the mesh nothing (unlike telemetry
+        or status requests, which spend everyone's airtime).
+        """
+        try:
+            event = await asyncio.wait_for(self.mc.commands.get_stats_radio(), timeout=5)
+        except Exception:  # noqa: BLE001 - stats are decoration, never health
+            log.debug("get_stats_radio failed", exc_info=True)
+            return
+        data = self._payload(event)
+        if isinstance(data, dict) and data.get("noise_floor") is not None:
+            self.emit("mc_radio_stats", {
+                k: data[k] for k in ("noise_floor", "last_rssi", "last_snr",
+                                     "tx_air_secs", "rx_air_secs") if k in data})
 
     async def _announce(self) -> None:
         info = dict(self.mc.self_info or {})
@@ -839,6 +916,36 @@ class MeshCoreLink(RadioLink):
             return
         self._admin_target = node_id
         self._submit(self.mc.commands.send_telemetry_req(contact))
+
+    def request_neighbours(self, node_id: str) -> None:
+        """Ask a repeater which nodes it can hear, and at what SNR.
+
+        One directed on-demand query, never polled - a listening post's view
+        of its neighbourhood is useful, but airtime belongs to everyone.
+        """
+        contact = self._contact_for(node_id)
+        if contact is None:
+            self.emit("error", f"no contact for {node_id}")
+            return
+        self._admin_target = node_id
+
+        async def _fetch() -> None:
+            try:
+                result = await self.mc.commands.fetch_all_neighbours(contact)
+            except Exception as exc:  # noqa: BLE001
+                self.emit("error", f"neighbours request failed: {exc}")
+                return
+            if not result:
+                self.emit("error", f"{node_id} did not answer the neighbours "
+                                   f"request (older firmware, or not permitted)")
+                return
+            neighbours = result.get("neighbours") or []
+            self.emit("mc_neighbours", (node_id, neighbours))
+            self._packet(PORT_NEIGHBOURS, node_id,
+                         f"{len(neighbours)} of {result.get('neighbours_count', '?')} "
+                         f"neighbours reported", raw=result)
+
+        self._submit(_fetch())
 
     # Auto-add bits, from examples/companion_radio/MyMesh.cpp.
     AUTOADD_OVERWRITE_OLDEST = 0x01

@@ -22,7 +22,7 @@ from .state import MeshState
 SKIP_EVENTS = ("ack", "mc_repeat")
 
 # MeshCore payloads that travel as tuples and are unpacked as such by the TUI.
-TUPLE_EVENTS = ("mc_login", "mc_cli", "mc_status", "mc_telemetry")
+TUPLE_EVENTS = ("mc_login", "mc_cli", "mc_status", "mc_telemetry", "mc_neighbours")
 
 
 def packet_to_dict(packet: Packet) -> dict[str, Any]:

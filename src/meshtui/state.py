@@ -7,7 +7,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .model import BROADCAST, ChatMessage, Node, Packet
+from .model import BROADCAST, SPARK_WIDTH, ChatMessage, Node, Packet
 
 PACKET_BUFFER = 2000
 CHAT_BUFFER = 1000
@@ -68,6 +68,8 @@ class RelayStat:
     last_seen: float = field(default_factory=time.time)
     snr_sum: float = 0.0
     snr_n: int = 0
+    last_snr: float | None = None
+    snr_history: deque[float] = field(default_factory=lambda: deque(maxlen=SPARK_WIDTH))
 
     @property
     def avg_snr(self) -> float | None:
@@ -305,12 +307,16 @@ class MeshState:
                 node.packets += 1
             # Never let a replayed or out-of-order packet drag this backwards.
             node.last_heard = max(node.last_heard or 0.0, packet.ts)
-            if packet.snr is not None:
+            # The receive-side SNR of a relayed packet measures the LAST hop's
+            # link to us, not the sender's - crediting it to the sender would
+            # make a distant node look loud. Signal belongs to the origin only
+            # when the packet arrived direct.
+            if packet.snr is not None and not packet.hops:
                 node.snr = packet.snr
                 # History comes from live packets only; NodeDB snapshots would
                 # replay stale values and flatten the trend.
                 node.snr_history.append(packet.snr)
-            if packet.rssi is not None:
+            if packet.rssi is not None and not packet.hops:
                 node.rssi = packet.rssi
             if packet.hops is not None:
                 node.hops = packet.hops
@@ -331,8 +337,12 @@ class MeshState:
         if packet.snr is not None:
             relay.snr_sum += packet.snr
             relay.snr_n += 1
-        # A packet relayed by its own originator is a direct reception, not a hop.
-        if packet.hops:
+            relay.last_snr = packet.snr
+            relay.snr_history.append(packet.snr)
+        # A packet relayed by its own originator is a direct reception, not a
+        # hop; and an edge from a sender the radio could not identify would
+        # link a phantom node into the graph.
+        if packet.hops and packet.from_id != "!00000000":
             self.relay_edges[(packet.from_id, byte)] += 1
 
     def _record_telemetry(self, packet: Packet) -> None:
@@ -415,7 +425,14 @@ class MeshState:
             node.snr_history.clear()
 
     def resolve_relay(self, byte: int) -> list[Node]:
-        """Nodes whose number ends in this byte. More than one means ambiguity."""
+        """Nodes matching a relay byte. More than one means ambiguity.
+
+        Meshtastic puts the LOW byte of the relayer's node number on the wire;
+        a MeshCore path byte is the FIRST byte of the repeater's public key,
+        which is the high byte of the num derived from it.
+        """
+        if self.protocol == "meshcore":
+            return [n for n in self.nodes.values() if (n.num >> 24) & 0xFF == byte]
         return [n for n in self.nodes.values() if (n.num & 0xFF) == byte]
 
     def relay_share(self) -> list[tuple[RelayStat, float]]:

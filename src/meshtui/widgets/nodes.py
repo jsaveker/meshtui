@@ -69,7 +69,19 @@ def snr_spark(history) -> Text:
 def fmt_battery(node: Node) -> Text:
     pct = node.battery
     if pct is None:
-        return Text("-", style="grey42")
+        # MeshCore never reports a percentage, only millivolts (own radio via
+        # get_bat, repeaters via their status reply) - show the voltage, with
+        # LiPo-ish thresholds.
+        volts = node.voltage
+        if volts is None:
+            return Text("-", style="grey42")
+        if volts >= 3.9:
+            style = "green"
+        elif volts >= 3.6:
+            style = "yellow"
+        else:
+            style = "red"
+        return Text(f"{volts:.1f}V", style=style)
     if pct > 100:  # 101 means "plugged in" in the Meshtastic protocol
         return Text("PWR", style="bright_cyan")
     if pct >= 60:

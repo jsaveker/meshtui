@@ -527,10 +527,24 @@ class MeshTUI(App[None]):
             self.record_admin(node_id, text)
         elif kind == "mc_status":
             node_id, data = payload
+            self.service.note_status(node_id, data)
             self.record_admin(node_id, f"status: {data}")
         elif kind == "mc_telemetry":
             node_id, data = payload
             self.record_admin(node_id, f"telemetry: {data}")
+        elif kind == "mc_neighbours":
+            node_id, neighbours = payload
+            self.record_admin(node_id, f"neighbours ({len(neighbours)}):")
+            for entry in neighbours:
+                who = self.state.node_name(f"!{str(entry.get('pubkey', ''))[:8]}")
+                snr = entry.get("snr")
+                ago = entry.get("secs_ago")
+                self.record_admin(node_id, (
+                    f"  {who:24} "
+                    f"{f'{snr:+.1f}dB' if snr is not None else '?':>8}  "
+                    f"{f'{ago}s ago' if ago is not None else ''}"))
+        elif kind == "mc_radio_stats":
+            self.state.radio_info.update(payload)
         elif kind == "status":
             self.note(str(payload))
         elif kind == "error":

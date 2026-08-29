@@ -55,6 +55,7 @@ class AdminScreen(Screen[None]):
         Binding("f2", "status", "status"),
         Binding("f3", "telemetry", "telemetry"),
         Binding("f4", "logout", "log out"),
+        Binding("f5", "neighbours", "neighbours"),
     ]
 
     def __init__(self, state: MeshState, link: Any) -> None:
@@ -248,6 +249,13 @@ class AdminScreen(Screen[None]):
             self.link.request_telemetry(self.target)
             self.query_one("#admin-log", RichLog).write(
                 Text("> telemetry request sent", style="bright_cyan"))
+
+    def action_neighbours(self) -> None:
+        if self.target:
+            self.link.request_neighbours(self.target)
+            self.query_one("#admin-log", RichLog).write(
+                Text("> neighbours request sent (the reply can take a while "
+                     "over LoRa)", style="bright_cyan"))
 
     def action_logout(self) -> None:
         if self.target:

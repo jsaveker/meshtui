@@ -97,6 +97,29 @@ class StatsPane(Static):
         if not top:
             mix.add_row(Text("waiting for traffic...", style="grey42"), Text(""), Text(""))
 
-        self.update(
-            Group(summary, Text(""), Text(" packet mix", style="grey42"), mix)
-        )
+        parts = [summary, Text(""), Text(" packet mix", style="grey42"), mix]
+
+        # Local RF statistics, polled over USB (MeshCore get_stats_radio).
+        info = state.radio_info
+        if info.get("noise_floor") is not None:
+            radio = Table.grid(padding=(0, 1), expand=True)
+            radio.add_column(justify="left", ratio=1)
+            radio.add_column(justify="right")
+            radio.add_column(justify="left", ratio=1)
+            radio.add_column(justify="right")
+            radio.add_row(
+                Text("noise floor", style="grey62"),
+                Text(f"{info['noise_floor']}dBm", style="bold yellow"),
+                Text("last snr", style="grey62"),
+                Text(f"{info.get('last_snr', 0):+.1f}", style="bold yellow"),
+            )
+            tx, rx = info.get("tx_air_secs"), info.get("rx_air_secs")
+            radio.add_row(
+                Text("tx air", style="grey62"),
+                Text(fmt_duration(tx) if tx is not None else "-", style="bold cyan"),
+                Text("rx air", style="grey62"),
+                Text(fmt_duration(rx) if rx is not None else "-", style="bold cyan"),
+            )
+            parts += [Text(""), Text(" radio", style="grey42"), radio]
+
+        self.update(Group(*parts))

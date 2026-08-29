@@ -191,6 +191,13 @@ class MeshService:
                 self.state.radio_info["autoadd"] = payload
             elif kind == "mc_repeat":
                 result = self.note_repeat(payload)
+            elif kind == "mc_status":
+                node_id, data = payload
+                self.note_status(node_id, data)
+            elif kind == "mc_radio_stats":
+                # Local RF statistics ride in radio_info so they reach gateway
+                # clients through the connected snapshot as well as live.
+                self.state.radio_info.update(payload)
             elif kind == "mc_login":
                 node_id, ok = payload
                 if ok:

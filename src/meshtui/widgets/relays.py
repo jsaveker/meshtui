@@ -22,8 +22,9 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
-from ..model import Node
+from ..model import SPARK_WIDTH, Node
 from ..state import MeshState
+from .nodes import snr_spark
 from .stats import fmt_duration
 
 BAR_WIDTH = 24
@@ -90,15 +91,17 @@ class RelayView(Static):
     def _relay_table(self) -> Table:
         table = Table.grid(padding=(0, 2))
         for justify, width in (("left", 30), ("left", BAR_WIDTH), ("right", 7),
-                               ("right", 8), ("right", 8), ("left", 10)):
+                               ("right", 8), ("right", 8), ("left", 9),
+                               ("right", 8), ("left", SPARK_WIDTH)):
             table.add_column(justify=justify, width=width)
         table.add_row(*[Text(h, style="grey42") for h in
-                        ("relay", "share", "", "packets", "origins", "avg snr")])
+                        ("relay", "share", "", "packets", "origins", "avg snr",
+                         "last", "trend")])
 
         share = self.state.relay_share()
         if not share:
             table.add_row(Text("no relayed packets seen yet", style="grey42"),
-                          *[Text("") for _ in range(5)])
+                          *[Text("") for _ in range(7)])
             return table
 
         for relay, fraction in share:
@@ -111,6 +114,9 @@ class RelayView(Static):
                 Text(str(relay.packets), style="grey70"),
                 Text(str(len(relay.origins)), style="grey70"),
                 Text(f"{snr:+.1f}dB" if snr is not None else "-", style="yellow"),
+                Text(f"{relay.last_snr:+.1f}" if relay.last_snr is not None else "-",
+                     style="bright_white"),
+                snr_spark(relay.snr_history),
             )
         return table
 
