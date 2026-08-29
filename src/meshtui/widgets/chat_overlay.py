@@ -29,6 +29,10 @@ class ChatScreen(Screen[None]):
         Binding("up", "prev", "prev channel", show=False),
         Binding("down", "next", "next channel", show=False),
         Binding("tab", "focus_input", "message", show=False),
+        # priority=True so these win over the focused ListView's own paging;
+        # neither key is used by the message Input, so typing is unaffected.
+        Binding("pageup", "history_up", "history", show=False, priority=True),
+        Binding("pagedown", "history_down", "history", show=False, priority=True),
     ]
 
     def __init__(self, state: MeshState, app_ref, focus_input: bool = False) -> None:
@@ -37,6 +41,9 @@ class ChatScreen(Screen[None]):
         self.app_ref = app_ref
         self._targets: list[tuple] = []
         self._focus_input_on_mount = focus_input
+        # What the conversation log currently shows, so the 1.5s tick can skip
+        # rewriting (and thus re-scrolling) an unchanged conversation.
+        self._rendered_sig: tuple | None = None
 
     def focus_input(self) -> None:
         self.query_one("#ov-input", ChatInput).focus()
@@ -49,7 +56,8 @@ class ChatScreen(Screen[None]):
             with Vertical(id="ov-right"):
                 yield RichLog(id="ov-log", highlight=False, markup=False,
                               wrap=True, max_lines=2000)
-                yield ChatInput(placeholder="message   esc to leave, /help for commands",
+                yield ChatInput(placeholder="message   esc to leave, pgup/pgdn for "
+                                            "history, /help for commands",
                                 id="ov-input")
         yield Footer()
 
@@ -132,12 +140,29 @@ class ChatScreen(Screen[None]):
     def render_conversation(self) -> None:
         target = self.state.active_target
         self.state.mark_read(target)
-        write_conversation(
-            self.query_one("#ov-log", RichLog),
-            self.state.messages_for(target),
-            self.state,
-            show_channel=(target[0] == "all"),
-        )
+        log = self.query_one("#ov-log", RichLog)
+        messages = list(self.state.messages_for(target))
+        # The rendering also reflects delivery markers and repeat counts, and
+        # those mutate recent messages without changing the count - so the
+        # tail is part of the signature.
+        tail = tuple((m.delivery_status, len(getattr(m, "repeated_by", ()) or ()))
+                     for m in messages[-8:])
+        sig = (target, len(messages), messages[-1].ts if messages else 0.0, tail)
+        if sig != self._rendered_sig:
+            # A rewrite resets RichLog's scroll position, which would yank a
+            # reader browsing the history back to the bottom on every tick.
+            # Rewrite only when the conversation actually changed, and keep
+            # the reader's place unless they were already at the end (or just
+            # switched conversations, which always starts at the latest).
+            switched = self._rendered_sig is None or self._rendered_sig[0] != target
+            at_end = switched or log.is_vertical_scroll_end
+            scroll_y = log.scroll_y
+            write_conversation(log, messages, self.state,
+                               show_channel=(target[0] == "all"))
+            self._rendered_sig = sig
+            if not at_end:
+                self.call_after_refresh(
+                    lambda: log.scroll_to(y=scroll_y, animate=False))
         label = self.state.target_label(target)
         self.query_one("#ov-log", RichLog).border_title = label
         self.query_one("#ov-status", Static).update(
@@ -168,6 +193,14 @@ class ChatScreen(Screen[None]):
 
     def action_next(self) -> None:
         self.query_one("#ov-list", ListView).action_cursor_down()
+
+    def action_history_up(self) -> None:
+        self.query_one("#ov-log", RichLog).scroll_page_up(animate=False)
+
+    def action_history_down(self) -> None:
+        # Paging back to the bottom re-enters live-follow: once the log sits
+        # at the end again, the next rewrite auto-scrolls as usual.
+        self.query_one("#ov-log", RichLog).scroll_page_down(animate=False)
 
     def action_focus_input(self) -> None:
         self.query_one("#ov-input", ChatInput).focus()

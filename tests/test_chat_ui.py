@@ -89,6 +89,27 @@ async def main():
         await pilot.press("enter"); await pilot.pause(0.3)
         check("over-limit not sent from overlay", len(spy.sent), before)
 
+        print("\\nscrolling back through history survives the refresh tick")
+        for i in range(120):
+            st.add_chat(ChatMessage(ts=now + i, from_id="!a5", from_name="Ops",
+                                    to_id="^all", text=f"log line {i}", channel=5))
+        overlay.render_conversation(); await pilot.pause(0.2)
+        log = overlay.query_one("#ov-log")
+        check("history overflows the viewport", log.is_vertical_scroll_end, True)
+        await pilot.press("pageup"); await pilot.pause(0.2)
+        check("pageup leaves the bottom", log.is_vertical_scroll_end, False)
+        held = log.scroll_y
+        await pilot.pause(2.0)  # two refresh ticks used to yank back to the end
+        check("the tick keeps the reader's place", log.scroll_y, held)
+        st.add_chat(ChatMessage(ts=now + 200, from_id="!a5", from_name="Ops",
+                                to_id="^all", text="new arrival", channel=5))
+        overlay.render_conversation(); await pilot.pause(0.3)
+        check("a new message keeps the reader's place", log.scroll_y, held)
+        for _ in range(30):
+            await pilot.press("pagedown")
+        await pilot.pause(0.2)
+        check("pagedown returns to live-follow", log.is_vertical_scroll_end, True)
+
         print("\\ncorner and overlay stay in sync")
         await pilot.press("escape"); await pilot.pause(0.3)
         check("overlay closed", isinstance(app.screen, ChatScreen), False)
