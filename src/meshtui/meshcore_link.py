@@ -340,35 +340,57 @@ class MeshCoreLink(RadioLink):
             log.debug("advert failed", exc_info=True)
 
         self._ready.set()
+        # Poll for messages on a short cadence (the companion never pushes them)
+        # and treat repeated get_msg failures as a dead radio, so the caller's
+        # reconnect logic takes over instead of the link spinning forever.
+        last_drain = 0.0
+        failures = 0
         while not self._stopping.is_set() and self.connected:
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.5)
+            now = time.time()
+            if now - last_drain >= 2.5:
+                last_drain = now
+                if await self._drain_messages():
+                    failures = 0
+                else:
+                    failures += 1
+                    if failures >= 3:
+                        self.connected = False
+                        self.emit("lost", "radio stopped responding")
+                        break
 
+        # Bounded so a dead device cannot wedge shutdown indefinitely.
         try:
-            await self.mc.disconnect()
+            await asyncio.wait_for(self.mc.disconnect(), timeout=3.0)
         except Exception:  # noqa: BLE001
             pass
 
     # --------------------------------------------------------------- events
 
-    async def _drain_messages(self, limit: int = 50) -> None:
+    async def _drain_messages(self, limit: int = 50) -> bool:
         """Pull queued messages until the radio says there are no more.
 
         Each get_msg dispatches its message through the normal event handlers
         (CHANNEL_MSG_RECV / CONTACT_MSG_RECV), so draining here is what makes an
         incoming channel reply actually reach the chat.
+
+        Returns True if the radio responded (even with "no more"), False if a
+        command errored - which the run loop counts toward declaring it dead.
         """
         from meshcore import EventType
 
         for _ in range(limit):
             try:
-                result = await self.mc.commands.get_msg(timeout=3)
-            except Exception:  # noqa: BLE001 - never let a poll kill the loop
+                result = await asyncio.wait_for(
+                    self.mc.commands.get_msg(timeout=3), timeout=5)
+            except Exception:  # noqa: BLE001 - a failed poll is a health signal
                 log.debug("get_msg failed", exc_info=True)
-                return
+                return False
             etype = getattr(result, "type", None)
             payload = getattr(result, "payload", None)
             if etype == EventType.NO_MORE_MSGS or not payload:
-                return
+                return True
+        return True
 
     def _wire_events(self, EventType: Any) -> None:
         handlers = {

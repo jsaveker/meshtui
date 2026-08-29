@@ -34,9 +34,16 @@ def _gateway_parser() -> argparse.ArgumentParser:
 
 
 def run_gateway(argv: list[str]) -> int:
+    import signal
     from .gateway import build_gateway
 
     args = _gateway_parser().parse_args(argv)
+
+    # systemd stops a service with SIGTERM; turn it into the same clean exit as
+    # Ctrl-C so the radio and socket are released and the next start is clean.
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _graceful)
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",

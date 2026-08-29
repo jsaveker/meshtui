@@ -97,6 +97,47 @@ you hear directly:
   on the mesh that is using a key published in Meshtastic's source.
 - **Demo mode** — a synthetic mesh, so you can try the whole thing with no hardware.
 
+## Running unattended (for days)
+
+The TUI is for sitting in front of. To leave a node **receiving, storing and
+relaying for days**, run the headless **gateway** instead — it owns the radio,
+reconnects on its own if the link drops, and has no UI that can hang. Clients
+(the CLI, and a future attached TUI) talk to it over a local socket.
+
+```sh
+meshtui gateway                 # foreground: owns the radio, prints a socket path
+meshtui gateway-status          # ask the running gateway how it is doing
+meshtui send channel 0 "hi"     # queue a message through it
+meshtui send dm <node> "hi"
+```
+
+For true days-long operation, run it under **systemd** so any crash restarts
+automatically. A unit is provided at
+`~/.config/systemd/user/meshtui-gateway.service`:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now meshtui-gateway
+loginctl enable-linger $USER     # keep it running when you are logged out
+systemctl --user status meshtui-gateway
+journalctl --user -u meshtui-gateway -f
+```
+
+Only one process can hold the radio, so stop the gateway before launching the
+TUI on the same node (`systemctl --user stop meshtui-gateway`), or point the TUI
+at a *different* radio.
+
+### What makes it survive
+
+- The companion never pushes messages, so the link **polls every ~2.5s** to pull
+  queued and live traffic; a run that stops polling would go quiet without
+  noticing, which is the bug behind "left it overnight, no messages".
+- **Repeated poll failures mark the radio dead**, so the gateway's reconnect loop
+  reopens the link instead of spinning on a dead port.
+- **SIGTERM shuts down cleanly** (releasing the serial port), so `systemctl
+  restart` never leaves the USB wedged or a half-dead process on the port - the
+  state that made a plain restart fail to reconnect.
+
 ## Two protocols
 
 meshtui speaks both mesh protocols and works out which one is attached:
