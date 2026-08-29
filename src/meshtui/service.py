@@ -292,8 +292,24 @@ class MeshService:
     def receive_contact(self, contact: dict[str, Any]):
         return self.receive_node(contact_to_node(contact))
 
+    def note_status(self, node_id: str, data: dict[str, Any]) -> None:
+        """A repeater's status reply carries its battery in millivolts and its
+        uptime - the only battery data MeshCore offers for a remote node."""
+        metrics: dict[str, Any] = {}
+        bat = data.get("bat")
+        if isinstance(bat, (int, float)) and bat > 0:
+            metrics["voltage"] = round(bat / 1000, 2)
+        if isinstance(data.get("uptime"), (int, float)):
+            metrics["uptimeSeconds"] = data["uptime"]
+        if metrics and str(node_id).startswith("!"):
+            self.receive_node({"id": node_id, "deviceMetrics": metrics})
+
     def receive_packet(self, packet):
-        if packet.from_id not in self.state.nodes and packet.from_id.startswith("!"):
+        # "!00000000" is key_to_id's placeholder for a sender the radio could
+        # not identify (RX-log entries without a pubkey prefix); it must not
+        # become a phantom node collecting packet counts.
+        if (packet.from_id not in self.state.nodes
+                and packet.from_id.startswith("!") and packet.from_id != "!00000000"):
             self.receive_node({"id": packet.from_id, "num": packet.raw.get("from")})
         self.state.add_packet(packet)
         if self.store is not None:

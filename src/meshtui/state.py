@@ -167,6 +167,8 @@ class MeshState:
         node_id = user.get("id") or raw.get("id") or (f"!{num:08x}" if num else None)
         if node_id is None:
             raise ValueError("node record has neither num nor id")
+        if node_id == "!00000000":
+            raise ValueError("placeholder id for an unidentified sender")
         if num is None:
             num = int(node_id.lstrip("!"), 16)
 
@@ -184,9 +186,16 @@ class MeshState:
         if user.get("role"):
             node.role = str(user["role"])
 
-        for src, dst in (("snr", "snr"), ("hopsAway", "hops"), ("lastHeard", "last_heard")):
+        for src, dst in (("snr", "snr"), ("hopsAway", "hops")):
             if raw.get(src) is not None:
                 setattr(node, dst, raw[src])
+        if raw.get("lastHeard") is not None:
+            # MeshCore adverts stamp last_advert with clocks we don't control,
+            # and some are wrong by days (or decades). A future last-heard
+            # renders a negative age and floats the node above every genuinely
+            # recent one; whatever the sender claims, we heard it no later
+            # than now.
+            node.last_heard = min(float(raw["lastHeard"]), time.time())
         if raw.get("viaMqtt"):
             node.via_mqtt = True
 
