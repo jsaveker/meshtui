@@ -23,7 +23,9 @@ Event kinds emitted in addition to the shared ones:
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import os
 import threading
 import time
 import uuid
@@ -218,6 +220,10 @@ class MeshCoreLink(RadioLink):
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
         self._ready = threading.Event()
+        # Set when a connect attempt failed because the radio's USB CDC stack
+        # is wedged (EPIPE while the device node still exists). The gateway's
+        # reconnect loop reads this to decide whether a USB reset would help.
+        self.usb_wedged = False
         self.contacts: dict[str, dict[str, Any]] = {}
         self.channels: list[tuple[int, str]] = []
         self.channel_secrets: dict[int, Any] = {}
@@ -288,24 +294,38 @@ class MeshCoreLink(RadioLink):
         self.emit("status", f"opening {self.port} ...")
         return await MeshCore.create_serial(self.port or "")
 
+    def _is_usb_wedge(self, exc: Exception | None) -> bool:
+        """EPIPE while the device node still exists means the radio's firmware
+        USB stack is stalling control requests (seen on ESP32 native-USB nodes
+        after an unclean exit) - the cable is fine and a USB reset recovers it.
+        A pulled cable removes the node instead."""
+        if self.host or self.ble or not self.port:
+            return False
+        text = str(exc or "").lower()
+        wedged = ((isinstance(exc, OSError) and exc.errno == errno.EPIPE)
+                  or "broken pipe" in text)
+        return wedged and os.path.exists(self.port)
+
     def _connect_error(self, exc: Exception | None) -> str:
         where = self.host or self.ble or self.port or "the radio"
         text = str(exc or "").strip()
-        # A broken pipe / errno on RTS toggle means the USB CDC is wedged - a
-        # replug resets it. ESP32-S3 native-USB nodes hit this after an unclean
-        # exit.
-        if isinstance(exc, (BrokenPipeError, OSError)) or "broken pipe" in text.lower():
-            return (f"lost the USB link to {where}. Unplug and replug the radio to "
-                    f"reset its USB, then reopen meshtui.")
+        if self.usb_wedged:
+            return (f"the radio at {where} has a wedged USB interface (it rejects "
+                    f"control requests; rebooting this computer will not help). "
+                    f"A USB reset recovers it - the gateway attempts one "
+                    f"automatically - otherwise unplug and replug the radio, and "
+                    f"power-cycle it if it has its own power source.")
         detail = f": {text}" if text else ""
         return f"could not connect to the meshcore radio on {where}{detail}"
 
     async def _run(self) -> None:
         from meshcore import EventType
 
+        self.usb_wedged = False
         try:
             self.mc = await self._connect()
         except Exception as exc:  # noqa: BLE001
+            self.usb_wedged = self._is_usb_wedge(exc)
             self.emit("error", self._connect_error(exc))
             return
         if self.mc is None:

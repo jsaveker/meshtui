@@ -1,0 +1,15 @@
+# meshtui: allow the local user to USB-reset a wedged MeshCore radio.
+#
+# Espressif native-USB (ESP32-S3/C3) nodes can wedge their CDC stack after an
+# unclean exit: the tty stays enumerated but every open dies with EPIPE. The
+# meshtui gateway recovers them by sending USBDEVFS_RESET to the device node
+# under /dev/bus/usb, which is root-only by default. This rule opens it up:
+# TAG+="uaccess" grants the active seat (must run before 73-seat-late.rules,
+# hence the 70- prefix), GROUP="uucp" covers headless machines whose user is
+# in the serial group anyway.
+#
+# Install:
+#   sudo cp contrib/70-meshtui-usb.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=303a
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", MODE="0660", GROUP="uucp", TAG+="uaccess"

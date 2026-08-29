@@ -21,6 +21,7 @@ from .model import ChannelRef, DeliveryStatus, DestinationRef, PeerRef, SendRece
 from .radio import DemoLink, RadioLink, SerialLink, TCPLink, find_serial_ports
 from .service import MeshService
 from .store import Store
+from .usbreset import try_usb_reset
 
 log = logging.getLogger(__name__)
 
@@ -284,6 +285,8 @@ class Gateway:
 
     def _radio_loop(self) -> None:
         """Keep reopening a failed or disconnected companion link."""
+        wedged_attempts = 0
+        reset_tried = False
         while not self._stop.is_set():
             self.link.start()
             while self.service.state.connected and not self._stop.wait(0.5):
@@ -292,6 +295,19 @@ class Gateway:
                 return
             self.service.state.connected = False
             self.link.stop()
+            if getattr(self.link, "usb_wedged", False):
+                wedged_attempts += 1
+            else:
+                wedged_attempts = 0
+                reset_tried = False
+            if wedged_attempts >= 2 and not reset_tried:
+                # Two consecutive EPIPE opens: the radio's USB stack is truly
+                # wedged, not transiently busy. One reset per wedge episode -
+                # if it does not cure it, only a replug will, and repeating a
+                # failing reset would just spam the log.
+                reset_tried = True
+                ok, detail = try_usb_reset(getattr(self.link, "port", None))
+                self.service.handle_event("status" if ok else "error", detail)
             self.service.handle_event(
                 "status", f"radio unavailable; reconnecting in {self.reconnect_seconds:g}s")
             if self._stop.wait(self.reconnect_seconds):
