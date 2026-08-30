@@ -84,11 +84,11 @@ svc2 = MeshService(store=None)
 svc2.state.upsert_node({"user": {"id": "!4c000001", "longName": "Distant Chat Node",
                                  "role": "CHAT"}, "lastHeard": time.time() - 86400})
 svc2.state.upsert_node({"user": {"id": "!4c000002", "longName": "Local Repeater",
-                                 "role": "REP"}, "lastHeard": time.time() - 60})
+                                 "role": "REPEATER"}, "lastHeard": time.time() - 60})
 check("the repeater outranks a chat node sharing the byte",
       svc2._repeater_label("4c"), "Local Repeater")
 svc2.state.upsert_node({"user": {"id": "!4c000003", "longName": "Other Repeater",
-                                 "role": "REP"}, "lastHeard": time.time() - 30})
+                                 "role": "REPEATER"}, "lastHeard": time.time() - 30})
 check("two repeaters on one byte stays honestly ambiguous",
       svc2._repeater_label("4c").endswith("?"), True)
 check("an unknown byte stays a hex label", svc2._repeater_label("ff"), "0xff")

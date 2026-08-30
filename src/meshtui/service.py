@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .meshcore_link import contact_to_node
-from .pathcalc import obs_from_packet
+from .pathcalc import is_rebroadcaster, obs_from_packet
 from .model import (
     BROADCAST,
     ChannelRef,
@@ -304,12 +304,10 @@ class MeshService:
                       if n.node_id[1:3].lower() == wanted]
         if not candidates:
             return f"0x{byte}"
-        def plausible(n) -> bool:
-            return (n.role or "").upper() in ("REP", "ROOM")
-        best = min(candidates, key=lambda n: (not plausible(n),
+        best = min(candidates, key=lambda n: (not is_rebroadcaster(n),
                                               -(n.last_heard or 0.0)))
-        rebroadcasters = sum(1 for n in candidates if plausible(n))
-        certain = rebroadcasters == 1 and plausible(best)
+        rebroadcasters = sum(1 for n in candidates if is_rebroadcaster(n))
+        certain = rebroadcasters == 1 and is_rebroadcaster(best)
         return best.name if certain or len(candidates) == 1 else f"{best.name}?"
 
     def receive_node(self, raw: dict[str, Any]):

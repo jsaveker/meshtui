@@ -95,6 +95,32 @@ check("the hop resolves to the repeater", analysis.hops[0].label, "Hilltop Repea
 check("route sums origin->hop->me",
       analysis.route_km is not None and analysis.route_km > analysis.direct_km, True)
 
+# A lone repeater is CONFIDENT even when chat nodes share its byte, and an
+# ambiguous or absurd hop must weaken the estimate, not inflate it.
+state.upsert_node({"user": {"id": "!4cffff01", "longName": "Chatty",
+                            "role": "CHAT"}})
+state.upsert_node({"user": {"id": "!4c112233", "longName": "Hilltop Repeater",
+                            "role": "REPEATER"}})
+confident = analyze(state, merged)
+check("a lone repeater stays confident despite byte-sharing chat nodes",
+      (confident.hops[0].ambiguous, confident.resolved), (False, 1))
+state.upsert_node({"user": {"id": "!4c445566", "longName": "Far Repeater",
+                            "role": "REPEATER"},
+                   "position": {"latitude": 48.0, "longitude": 2.0}})
+contested = analyze(state, merged)
+check("a second repeater on the byte makes the hop ambiguous",
+      contested.hops[0].ambiguous, True)
+check("an ambiguous hop is excluded from the route",
+      contested.route_km is None or contested.route_km < 100, True)
+
+state.upsert_node({"user": {"id": "!99000001", "longName": "Paris Repeater",
+                            "role": "REPEATER"},
+                   "position": {"latitude": 48.85, "longitude": 2.35}})
+absurd = analyze(state, PathObservation(ts=NOW, kind="advert", origin_id="!abababab",
+                                        path="99", hops=1))
+check("an impossible leg yields no route instead of a continental one",
+      absurd.route_km, None)
+
 reply = bot_reply(state, merged, "UsefulTowel")
 check("reply speaks the pathbot dialect",
       reply.startswith("@[UsefulTowel] [1h] 4c route: ~") and "direct: ~" in reply, True)

@@ -20,6 +20,17 @@ from .geo import haversine_km
 
 KM_TO_MI = 0.621371
 
+# A single LoRa hop beyond this is not real - it means a hop byte matched the
+# wrong node - so no distance estimate at all beats a continent-sized one.
+MAX_LEG_KM = 400.0
+
+
+def is_rebroadcaster(node: Any) -> bool:
+    """Only repeaters, routers, and room servers rebroadcast - matching the
+    literal role strings both protocols use (REPEATER/ROUTER/ROOM/REP)."""
+    role = (getattr(node, "role", "") or "").upper()
+    return any(tag in role for tag in ("REP", "ROUTER", "ROOM"))
+
 # One byte per hop is the MeshCore default; wider hashes are rare and we skip
 # byte resolution for them rather than mis-attribute.
 HASH_SIZE = 1
@@ -145,7 +156,9 @@ class PathAnalysis:
             out.append((self.origin.lat, self.origin.lon,
                         self.origin.long_name or self.origin.node_id, "origin"))
         for hop in self.hops:
-            if hop.node is not None and hop.node.has_position:
+            # An ambiguous hop is a guess; a guessed position poisons the
+            # drawing and the distance sum, so only confident hops join.
+            if hop.node is not None and not hop.ambiguous and hop.node.has_position:
                 out.append((hop.node.lat, hop.node.lon, hop.label, "hop"))
         if self.me is not None and self.me.has_position:
             out.append((self.me.lat, self.me.lon, "me", "me"))
@@ -171,19 +184,27 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
             candidates = state.resolve_relay(int(byte, 16))
         except ValueError:
             candidates = []
-        # Many nodes share any single byte; rank by what physics allows -
-        # repeaters rebroadcast, others don't - then prefer positioned (they
-        # advertise locations as a rule) and recently heard.
-        pick = min(candidates, key=lambda n: (
-            (n.role or "").upper() not in ("REP", "ROOM"),
-            not n.has_position, -(n.last_heard or 0.0))) if candidates else None
-        hops.append(Hop(byte=byte, node=pick, ambiguous=len(candidates) > 1))
+        # Many nodes share any single byte; only rebroadcasters can be hops,
+        # so a lone repeater match is CONFIDENT even when chat nodes share
+        # the byte. Prefer positioned (repeaters advertise locations as a
+        # rule) and recently heard among what remains.
+        plausible = [n for n in candidates if is_rebroadcaster(n)]
+        pool = plausible or candidates
+        pick = min(pool, key=lambda n: (not n.has_position,
+                                        -(n.last_heard or 0.0))) if pool else None
+        ambiguous = (len(plausible) > 1
+                     or (not plausible and len(candidates) > 1))
+        hops.append(Hop(byte=byte, node=pick, ambiguous=ambiguous))
     analysis = PathAnalysis(origin=origin, me=me, hops=hops)
 
     chain = analysis.points()
     if len(chain) >= 2:
-        analysis.route_km = sum(
-            haversine_km(a[0], a[1], b[0], b[1]) for a, b in zip(chain, chain[1:]))
+        legs = [haversine_km(a[0], a[1], b[0], b[1])
+                for a, b in zip(chain, chain[1:])]
+        # One impossible leg means a byte matched the wrong node somewhere;
+        # report nothing rather than a continent-sized route.
+        if max(legs) <= MAX_LEG_KM:
+            analysis.route_km = sum(legs)
     if (origin is not None and origin.has_position
             and me is not None and me.has_position):
         analysis.direct_km = haversine_km(origin.lat, origin.lon, me.lat, me.lon)
