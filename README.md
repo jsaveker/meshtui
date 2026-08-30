@@ -5,7 +5,7 @@
 <h1 align="center">MeshTUI</h1>
 
 <p align="center">
-  <strong>A terminal control surface for MeshCore and Meshtastic.</strong><br>
+  <strong>A terminal control surface for <a href="https://github.com/meshcore-dev/MeshCore">MeshCore™</a> and <a href="https://meshtastic.org/">Meshtastic®</a>.</strong><br>
   Watch the air. Talk across the mesh. Trace routes. Admin repeaters without climbing onto the roof.
 </p>
 
@@ -314,6 +314,30 @@ The Meshtastic security audit tests only the default and shorthand keys publishe
 by upstream. It does not brute-force private channel keys. Sender, destination,
 packet ID, hop count, signal strength, and channel hash can still be visible as
 radio metadata even when message content is encrypted.
+
+## Built on community work
+
+MeshTUI is an independent community project built on the work of two open-source
+radio ecosystems:
+
+- [Meshtastic®](https://meshtastic.org/) — the off-grid mesh firmware, protocol,
+  [Python client](https://github.com/meshtastic/python), documentation, and years
+  of field testing behind a remarkably welcoming radio network.
+- [MeshCore™](https://github.com/meshcore-dev/MeshCore) — the packet-radio protocol,
+  [firmware](https://github.com/meshcore-dev/MeshCore),
+  [Python client](https://github.com/meshcore-dev/meshcore_py), documentation,
+  explicit routing, and remote-repeater ideas that make serious RF operations
+  possible from a terminal.
+
+Thank you to their maintainers, contributors, testers, documentarians, and radio
+operators. MeshTUI would not exist without the software and field knowledge they
+share.
+
+MeshTUI is not affiliated with or endorsed by the Meshtastic project. It is not
+affiliated with, sponsored by, or endorsed by the MeshCore project. Meshtastic®
+is a registered trademark of Meshtastic LLC. MeshCore™ is used solely to describe
+compatibility. Each upstream project's code and documentation remains governed
+by its own licenses and terms.
 
 ## Development
 
