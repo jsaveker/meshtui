@@ -268,6 +268,29 @@ bot.route(channel_msg("StaleSender: !path", ts=time.time() - 600))
 check("stale backlog requests are ignored", len(sent), 1)
 bot.close()
 
+# ------------------------------------------------- payload-budget ladder
+from meshtui.model import payload_bytes
+from meshtui.radio import protocol_payload_limit
+
+LIMIT = protocol_payload_limit("meshcore")
+service.state.channels = [(0, "Public"), (2, "#bot")]
+ladder_bot = PathBot(service, channel="#bot")
+ladder_bot._map_link = lambda analysis: "https://da.gd/mapzz"
+short_obs = PathObservation(ts=time.time(), kind="channel", path="4c82",
+                            hops=2, origin_name="Near", channel=2)
+long_obs = PathObservation(ts=time.time(), kind="channel",
+                           path="ab" * 40, hops=40, origin_name="Far", channel=2)
+fits = ladder_bot._compose_reply("@[Near] [2h]", short_obs, LIMIT)
+check("a short reply keeps everything including the link",
+      fits.endswith(", https://da.gd/mapzz") and payload_bytes(fits) <= LIMIT, True)
+long_reply = ladder_bot._compose_reply("@[Far] [40h]", long_obs, LIMIT)
+check("a 40-hop reply fits the payload", payload_bytes(long_reply) <= LIMIT, True)
+check("degradation drops whole pieces, never truncating mid-hash",
+      "…" not in long_reply and not long_reply.endswith(","), True)
+check("the degraded reply still leads with the hop count",
+      long_reply.startswith("@[Far] [40h]"), True)
+ladder_bot.close()
+
 # ---------------------------------------------------------------- test bot
 from meshtui.bot import TestBot
 

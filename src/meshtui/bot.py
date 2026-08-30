@@ -304,17 +304,41 @@ class PathBot(BotRouter):
                 break
             time.sleep(self.WAIT_STEP_SECONDS)
         state = self.service.state
-        reply = bot_reply(state, obs, requester)
         destination = ChannelRef(state.protocol, message.channel,
                                  state.channel_name(message.channel))
         limit = protocol_payload_limit(destination.protocol)
-        if obs is not None and obs.path:
-            link = self._map_link(analyze(state, obs))
-            if link and payload_bytes(f"{reply}, {link}") <= limit:
-                reply = f"{reply}, {link}"
-        text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
+        if obs is None or obs.hops <= 0:
+            reply = bot_reply(state, obs, requester)
+            text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
+        else:
+            text = self._compose_reply(f"@[{requester}] [{obs.hops}h]",
+                                       obs, limit)
         log.info("pathbot: %s", text)
         return [self.service.send_message(text, destination)]
+
+    def _compose_reply(self, head: str, obs, limit: int,
+                       tail_sep: str = "") -> str:
+        """The richest reply that fits one LoRa payload.
+
+        Degrades whole pieces at a time - drop the map link, then the hop
+        hashes, then the distances - because a receipt truncated mid-hash is
+        worse than a shorter honest one."""
+        state = self.service.state
+        full, analysis = path_details(state, obs)
+        lite, _ = path_details(state, obs, with_hashes=False)
+        link = self._map_link(analysis) if obs.path else None
+        variants: list[str] = []
+        for tail in (full, lite):
+            if not tail:
+                continue
+            if link:
+                variants.append(f"{head}{tail_sep}{tail}, {link}")
+            variants.append(f"{head}{tail_sep}{tail}")
+        variants.append(head)
+        for candidate in variants:
+            if payload_bytes(candidate) <= limit:
+                return candidate
+        return split_mesh_text(head, limit, max_chunks=1, prefix="")[0]
 
     SHORTENER = "https://da.gd/shorten?url="
 
@@ -419,17 +443,13 @@ class TestBot(PathBot):
             reply = f"@[{requester}] direct to {station}"
             if obs.snr is not None:
                 reply += f" ({obs.snr:+.1f}dB)"
+            text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
         else:
-            # Same journey detail as the pathbot: hop hashes, distances,
-            # resolution fraction, map link - a receipt worth getting.
-            tail, analysis = path_details(state, obs)
-            reply = (f"@[{requester}] {obs.hops} "
-                     f"hop{'s' if obs.hops > 1 else ''} to {station}"
-                     + (f":{tail}" if tail else ""))
-            if obs.path:
-                link = self._map_link(analysis)
-                if link and payload_bytes(f"{reply}, {link}") <= limit:
-                    reply = f"{reply}, {link}"
-        text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
+            # Same journey detail as the pathbot - hop hashes, distances,
+            # resolution fraction, map link - degrading by whole pieces when
+            # the payload budget demands it.
+            head = (f"@[{requester}] {obs.hops} "
+                    f"hop{'s' if obs.hops > 1 else ''} to {station}")
+            text = self._compose_reply(head, obs, limit, tail_sep=":")
         log.info("testbot: %s", text)
         return [self.service.send_message(text, destination)]

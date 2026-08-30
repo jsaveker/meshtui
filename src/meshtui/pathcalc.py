@@ -229,11 +229,15 @@ def fmt_mi(km: float) -> str:
     return f"~{km * KM_TO_MI:.1f}mi"
 
 
-def path_details(state: Any, obs: PathObservation) -> tuple[str, PathAnalysis]:
-    """The journey tail both bots share: ' aa,bb route: ~Xmi, direct: ~Ymi (r/n)'."""
+def path_details(state: Any, obs: PathObservation,
+                 with_hashes: bool = True) -> tuple[str, PathAnalysis]:
+    """The journey tail both bots share: ' aa,bb route: ~Xmi, direct: ~Ymi (r/n)'.
+
+    with_hashes=False gives the shorter distances-only variant, for when the
+    full tail would not fit a LoRa payload."""
     analysis = analyze(state, obs)
     tail = ""
-    if obs.path:
+    if with_hashes and obs.path:
         tail += " " + ",".join(obs.hop_bytes())
     details = []
     if analysis.route_km:
