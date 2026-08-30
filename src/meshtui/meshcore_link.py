@@ -360,10 +360,12 @@ class MeshCoreLink(RadioLink):
         try:
             # Lets the library match RF-log packets to the channel messages
             # they carry, which injects each message's path/SNR/RSSI - the
-            # data behind path observations and the !path bot.
-            self.mc.decrypt_channels = True
-        except Exception:  # noqa: BLE001 - older library builds lack the flag
-            log.debug("decrypt_channels unavailable", exc_info=True)
+            # data behind path observations and the !path bot. This is a
+            # method, not a property: plain attribute assignment would set a
+            # stray attribute and silently change nothing.
+            self.mc.set_decrypt_channel_logs(True)
+        except Exception:  # noqa: BLE001 - older library builds lack the call
+            log.debug("set_decrypt_channel_logs unavailable", exc_info=True)
         await self._load_contacts()
         await self._check_autoadd()
 
@@ -744,6 +746,13 @@ class MeshCoreLink(RadioLink):
                 "tx_power": info.get("tx_power"), "max_tx_power": info.get("max_tx_power"),
             },
         })
+        # Our own position anchors every distance the paths explorer shows
+        # (direct miles need both endpoints); the radio knows it if its
+        # location is set. 0,0 means unset, not the Gulf of Guinea.
+        lat, lon = info.get("adv_lat"), info.get("adv_lon")
+        if lat is not None and lon is not None and (lat or lon):
+            self.emit("node", {"id": self.my_node_id,
+                               "position": {"latitude": lat, "longitude": lon}})
 
     async def _load_contacts(self) -> None:
         try:

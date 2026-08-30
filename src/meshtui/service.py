@@ -27,7 +27,7 @@ from .model import (
 )
 from .radio import RadioLink, protocol_payload_limit
 from .state import LocalChannel, MeshState
-from .store import Store
+from .store import LAST_OBSERVER, Store
 
 
 ServiceListener = Callable[[str, Any], None]
@@ -150,6 +150,13 @@ class MeshService:
         """Restore durable facts/chat for a headless process."""
         if self.store is None or not self.store.enabled:
             return
+        # Restore runs before the radio identifies itself, but path history is
+        # scoped per local node - without adopting the last observer, every
+        # gateway restart silently started the paths dataset from zero.
+        if self.store.local_node is None:
+            last = self.store.get_meta(LAST_OBSERVER)
+            if last:
+                self.store.local_node = str(last)
         for record in self.store.known_nodes():
             record.pop("_first_seen", None)
             record.pop("_packets", None)
@@ -388,6 +395,9 @@ class MeshService:
                 pass
         if self.store is not None and self.store.enabled:
             self.store.local_node = state.my_node_id
+            # So the next restart's restore can adopt the right scope before
+            # the radio has identified itself.
+            self.store.set_meta(LAST_OBSERVER, state.my_node_id)
 
     # ------------------------------------------------------------- outbound
 
