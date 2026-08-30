@@ -320,20 +320,23 @@ class PathBot(BotRouter):
                        tail_sep: str = "") -> str:
         """The richest reply that fits one LoRa payload.
 
-        Degrades whole pieces at a time - drop the map link, then the hop
-        hashes, then the distances - because a receipt truncated mid-hash is
-        worse than a shorter honest one."""
+        Degrades whole pieces at a time, and the map link is the LAST thing
+        to go - it carries the entire resolved route visually, where hop
+        hashes only hint at it. A receipt truncated mid-hash is worse than a
+        shorter honest one, so no variant is ever cut."""
         state = self.service.state
         full, analysis = path_details(state, obs)
         lite, _ = path_details(state, obs, with_hashes=False)
         link = self._map_link(analysis) if obs.path else None
         variants: list[str] = []
+        if link:
+            for tail in (full, lite):
+                if tail:
+                    variants.append(f"{head}{tail_sep}{tail}, {link}")
+            variants.append(f"{head}, {link}")
         for tail in (full, lite):
-            if not tail:
-                continue
-            if link:
-                variants.append(f"{head}{tail_sep}{tail}, {link}")
-            variants.append(f"{head}{tail_sep}{tail}")
+            if tail:
+                variants.append(f"{head}{tail_sep}{tail}")
         variants.append(head)
         for candidate in variants:
             if payload_bytes(candidate) <= limit:

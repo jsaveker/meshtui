@@ -289,6 +289,15 @@ check("degradation drops whole pieces, never truncating mid-hash",
       "…" not in long_reply and not long_reply.endswith(","), True)
 check("the degraded reply still leads with the hop count",
       long_reply.startswith("@[Far] [40h]"), True)
+check("the map link outlives the hop hashes",
+      long_reply.endswith(", https://da.gd/mapzz")
+      and "ab,ab" not in long_reply, True)
+no_link_bot = PathBot(service, channel="#bot")
+no_link_bot._map_link = lambda analysis: None
+bare = no_link_bot._compose_reply("@[Far] [40h]", long_obs, LIMIT)
+check("without a link, degradation still lands on a fitting variant",
+      payload_bytes(bare) <= LIMIT and bare.startswith("@[Far] [40h]"), True)
+no_link_bot.close()
 ladder_bot.close()
 
 # ---------------------------------------------------------------- test bot
