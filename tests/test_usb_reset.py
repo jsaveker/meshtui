@@ -39,6 +39,26 @@ link = MeshCoreLink(lambda k, p: None, host="10.0.0.1:4403")
 check("TCP link never classifies as wedged",
       link._is_usb_wedge(BrokenPipeError(32, "Broken pipe")), False)
 
+# ------------------------------------------- silent radio at connect time
+import asyncio, tempfile
+
+with tempfile.NamedTemporaryFile(prefix="fake-ttyACM") as tty:
+    events = []
+    link = MeshCoreLink(lambda k, p: events.append((k, p)), port=tty.name)
+    async def _never():
+        await asyncio.sleep(3600)
+    link._connect = lambda: _never()
+    real_wait_for = asyncio.wait_for
+    asyncio.wait_for = lambda coro, timeout: real_wait_for(coro, timeout=0.05)
+    try:
+        asyncio.run(link._run())
+    finally:
+        asyncio.wait_for = real_wait_for
+    check("a silent radio times out instead of hanging the gateway",
+          any(k == "error" and "did not answer" in p for k, p in events), True)
+    check("a silent radio counts as wedged (so the USB reset engages)",
+          link.usb_wedged, True)
+
 # --------------------------------------------------- tty -> usbfs mapping
 check("unknown tty maps to no usbfs node",
       usbreset.usb_device_node("/dev/ttyNOPE99"), None)

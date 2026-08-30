@@ -324,7 +324,20 @@ class MeshCoreLink(RadioLink):
 
         self.usb_wedged = False
         try:
-            self.mc = await self._connect()
+            self.mc = await asyncio.wait_for(self._connect(), timeout=45)
+        except asyncio.TimeoutError:
+            # The port opened but the radio never answered the companion
+            # handshake. Waiting forever here left the gateway stuck at
+            # "opening" with no retry; a silent radio is the same
+            # wedged-firmware family as the EPIPE stall, with the same
+            # remedy - reset the device, not the host.
+            self.usb_wedged = bool(self.port and not self.host and not self.ble
+                                   and os.path.exists(self.port))
+            where = self.host or self.ble or self.port or "the radio"
+            self.emit("error", f"the radio at {where} did not answer within 45s"
+                      + ("; its firmware looks wedged - a USB reset or replug "
+                         "recovers it" if self.usb_wedged else ""))
+            return
         except Exception as exc:  # noqa: BLE001
             self.usb_wedged = self._is_usb_wedge(exc)
             self.emit("error", self._connect_error(exc))
