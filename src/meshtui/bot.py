@@ -273,10 +273,16 @@ class PathBot(BotRouter):
                          cooldown_seconds=cooldown_seconds,
                          max_requests_per_hour=max_requests_per_hour)
 
+    # Ignore requests older than this: a gateway that reconnects drains the
+    # radio's queued backlog, and answering a stale !path is just noise.
+    MAX_REQUEST_AGE = 300.0
+
     def _eligible(self, message: ChatMessage) -> bool:
         if message.outgoing or message.is_dm:
             return False
         if not self._channel_matches(message.channel):
+            return False
+        if message.ts and time.time() - message.ts > self.MAX_REQUEST_AGE:
             return False
         _, command = split_sender(message.text)
         if command.startswith("@["):  # another bot's reply

@@ -142,6 +142,8 @@ bot.route(channel_msg("B30-Automatica: @[UsefulTowel] [1h] 4c route: ~1mi"))
 check("another bot's reply is never answered", len(sent), 1)
 bot.route(channel_msg("Someone: !path", channel=0))
 check("other channels are ignored", len(sent), 1)
+bot.route(channel_msg("StaleSender: !path", ts=time.time() - 600))
+check("stale backlog requests are ignored", len(sent), 1)
 bot.close()
 
 # ------------------------------------------------------------- persistence
