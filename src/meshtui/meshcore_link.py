@@ -95,8 +95,8 @@ def _split_path(path: Any, path_len: Any) -> list[str]:
     """MeshCore path is path_len repeater hashes; return them as hex.
 
     path_len counts HOPS while the buffer holds hops x hash-width bytes, so
-    the width falls out of the division (1-byte and 2-byte-hash meshes both
-    exist)."""
+    the width falls out of the division (the wire format allows 1- to 4-byte
+    hashes, and one mesh can carry several widths at once)."""
     if isinstance(path, (bytes, bytearray)):
         raw = path.hex()
     else:
@@ -104,7 +104,7 @@ def _split_path(path: Any, path_len: Any) -> list[str]:
     chars = len(raw) // 2 * 2
     width = 2
     if isinstance(path_len, int) and path_len > 0 and chars % path_len == 0 \
-            and chars // path_len in (2, 4):
+            and chars // path_len in (2, 4, 6, 8):
         width = chars // path_len
     hashes = [raw[i:i + width] for i in range(0, chars // width * width, width)]
     return [h for h in hashes if len(h) == width]
@@ -633,7 +633,7 @@ class MeshCoreLink(RadioLink):
         relay = None
         path = data.get("path") or ""
         hash_size = data.get("path_hash_size", 1)
-        if path and hash_size in (1, 2):
+        if path and hash_size in (1, 2, 3, 4):
             # The relays view keys by the FIRST byte of the delivering
             # repeater's hash, which is the first byte of its key whatever
             # the hash width.

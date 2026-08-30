@@ -143,6 +143,21 @@ check("_split_path derives the same widths",
       (_split_path("9ef9500e", 2), _split_path("aabbcc", 3)),
       (["9ef9", "500e"], ["aa", "bb", "cc"]))
 
+# the exact 3-byte-hash path a live mesh produced (three hops, nine bytes)
+TRI_PATH = "81e6a7a30000bc20c2"
+check("three-byte hashes split into six-char groups",
+      PathObservation(ts=NOW, kind="channel", path=TRI_PATH, hops=3).hop_bytes(),
+      ["81e6a7", "a30000", "bc20c2"])
+check("_split_path handles 3-byte hashes",
+      _split_path(TRI_PATH, 3), ["81e6a7", "a30000", "bc20c2"])
+tri_state = MeshState()
+tri_state.protocol = "meshcore"
+tri_state.upsert_node({"user": {"id": "!bc20c203", "longName": "Santaluz Solar Repeater",
+                                "role": "REPEATER"}})
+tri = analyze(tri_state, PathObservation(ts=NOW, kind="channel", path=TRI_PATH, hops=3))
+check("a 3-byte hash resolves by its six-char prefix",
+      (tri.hops[2].label, tri.hops[2].ambiguous), ("Santaluz Solar Repeater", False))
+
 wide = obs_from_packet(Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all",
                               channel=2, portnum="TEXT_MESSAGE_APP", summary="x",
                               raw={"type": "CHAN", "text": "Far: !path",

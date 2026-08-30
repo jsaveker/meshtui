@@ -31,9 +31,10 @@ def is_rebroadcaster(node: Any) -> bool:
     role = (getattr(node, "role", "") or "").upper()
     return any(tag in role for tag in ("REP", "ROUTER", "ROOM"))
 
-# Meshes run 1- or 2-byte per-hop path hashes (the frame says which); a hash
-# is the first byte(s) of the repeater's public key either way.
-HASH_SIZES = (1, 2)
+# The frame's 2-bit width field allows 1- to 4-byte per-hop path hashes (all
+# seen in the wild, sometimes on the same mesh); a hash is the first byte(s)
+# of the repeater's public key whatever the width.
+HASH_SIZES = (1, 2, 3, 4)
 
 
 @dataclass
@@ -63,7 +64,7 @@ class PathObservation:
             return []
         chars = len(self.path) // 2 * 2
         width = 2
-        if self.hops and chars % self.hops == 0 and chars // self.hops in (2, 4):
+        if self.hops and chars % self.hops == 0 and chars // self.hops in (2, 4, 6, 8):
             width = chars // self.hops
         return [self.path[i:i + width] for i in range(0, chars // width * width, width)]
 
