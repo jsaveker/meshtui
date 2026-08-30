@@ -7,6 +7,7 @@ link back to its Packet, which is what makes the inspector possible.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from rich.text import Text
 from textual.binding import Binding
@@ -18,10 +19,14 @@ from ..state import MeshState
 MAX_ROWS = 2000
 
 # Filter modes cycled with `f`
-FILTERS: list[tuple[str, set[str] | None]] = [
-    ("all", None),
-    ("chatty", {"TEXT_MESSAGE_APP", "POSITION_APP", "NODEINFO_APP", "TRACEROUTE_APP"}),
-    ("text only", {"TEXT_MESSAGE_APP"}),
+FILTERS: list[tuple[str, Any]] = [
+    ("all", lambda p: True),
+    # A busy mesh is mostly other people's encrypted traffic in the RF log;
+    # this view keeps only what was addressed to, decoded by, or sent by us.
+    ("no rf log", lambda p: p.portnum != "RXLOG_APP"),
+    ("chatty", lambda p: p.portnum in {"TEXT_MESSAGE_APP", "POSITION_APP",
+                                       "NODEINFO_APP", "TRACEROUTE_APP"}),
+    ("text only", lambda p: p.portnum == "TEXT_MESSAGE_APP"),
 ]
 
 
@@ -85,8 +90,7 @@ class PacketFeed(DataTable):
     # --------------------------------------------------------------- content
 
     def _passes(self, packet: Packet) -> bool:
-        allowed = FILTERS[self.filter_index][1]
-        return allowed is None or packet.portnum in allowed
+        return bool(FILTERS[self.filter_index][1](packet))
 
     def cycle_filter(self, state: MeshState) -> str:
         self.filter_index = (self.filter_index + 1) % len(FILTERS)
@@ -174,7 +178,13 @@ class PacketFeed(DataTable):
         line.append(" ")
         line.append(f"{label:<6}", style=f"bold {colour}")
         line.append(" ")
-        line.append(f"{state.node_name(packet.from_id):<5}"[:5], style="bright_white")
+        if packet.from_id == "!00000000":
+            # An RF-logged packet whose sender the radio could not identify
+            # (encrypted traffic between other nodes) - "!0000" reads broken.
+            line.append("rf   ", style="grey42")
+        else:
+            line.append(f"{state.node_name(packet.from_id):<5}"[:5],
+                        style="bright_white")
         line.append(" -> ", style="grey42")
         dest = "all" if packet.is_broadcast else state.node_name(packet.to_id)
         line.append(f"{dest:<5}"[:5], style="grey62" if packet.is_broadcast else "bright_yellow")

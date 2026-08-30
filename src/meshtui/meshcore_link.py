@@ -614,7 +614,17 @@ class MeshCoreLink(RadioLink):
         data = self._payload(event)
         from_id = key_to_id(data.get("adv_key") or data.get("pubkey_prefix") or "")
         kind = str(data.get("payload_typename") or "rx").lower()
-        summary = f"rf {kind} {data.get('payload_length', '?')}B"
+        # The contents of other nodes' traffic are opaque, but its journey is
+        # not - the route note is what makes these lines worth showing.
+        route = data.get("route_typename")
+        route_note = ""
+        frame_hops = data.get("path_len")
+        if route in ("FLOOD", "TC_FLOOD") and isinstance(frame_hops, int):
+            route_note = (" heard direct" if frame_hops == 0
+                          else f" via {frame_hops} hop{'s' if frame_hops > 1 else ''}")
+        elif route in ("DIRECT", "TC_DIRECT"):
+            route_note = " (routed)"
+        summary = f"rf {kind} {data.get('payload_length', '?')}B{route_note}"
         snr = self._signal(data, "snr")
         rssi = self._signal(data, "rssi")
         # The last byte of the path is the repeater that actually delivered

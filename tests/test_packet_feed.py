@@ -91,6 +91,17 @@ async def main():
         await pilot.pause(0.1)
         check("scrolling up stops the feed from yanking", feed.cursor_row, anchored)
 
+        # the 'no rf log' filter hides unattributed RF noise
+        feed.cycle_filter(app.state)
+        check("second filter is no rf log", feed.filter_name, "no rf log")
+        rxlog_rows = sum(1 for r in feed._rows
+                         if isinstance(r, Packet) and r.portnum == "RXLOG_APP")
+        check("rf log rows are filtered out", rxlog_rows, 0)
+        for _ in range(len(__import__('meshtui.widgets.packets',
+                                      fromlist=['FILTERS']).FILTERS) - 1):
+            feed.cycle_filter(app.state)
+        check("filter cycles back to all", feed.filter_name, "all")
+
         # the row cap must actually trim (also once dead code)
         import meshtui.widgets.packets as packets_module
         real_max = packets_module.MAX_ROWS
