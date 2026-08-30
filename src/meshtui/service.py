@@ -290,18 +290,19 @@ class MeshService:
         return None
 
     def _repeater_label(self, byte: str) -> str:
-        """A path byte is the first byte of a repeater's public key, and a
-        node id is '!' + the key's first four bytes - so match on that byte.
+        """A path hash is the leading byte(s) of a repeater's public key, and
+        a node id is '!' + the key's first four bytes - so match the prefix
+        (2 hex chars on 1-byte-hash meshes, 4 on 2-byte ones).
 
-        Hundreds of nodes share any single byte, so first-match attribution
+        Many nodes can share a short hash, so first-match attribution
         regularly credited a rebroadcast to some contact three states away.
         Rank the candidates by what physics allows - only repeaters and room
         servers rebroadcast, and a recently-heard one beats a long-silent one
-        - and when more than one repeater shares the byte, say so with a '?'
+        - and when more than one repeater shares the hash, say so with a '?'
         rather than pretending certainty."""
         wanted = byte.lower()
         candidates = [n for n in self.state.nodes.values()
-                      if n.node_id[1:3].lower() == wanted]
+                      if n.node_id[1:1 + len(wanted)].lower() == wanted]
         if not candidates:
             return f"0x{byte}"
         best = min(candidates, key=lambda n: (not is_rebroadcaster(n),

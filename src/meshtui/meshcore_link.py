@@ -92,13 +92,22 @@ def _hex1(value: Any) -> str:
 
 
 def _split_path(path: Any, path_len: Any) -> list[str]:
-    """MeshCore path is path_len 1-byte repeater ids; return them as hex."""
+    """MeshCore path is path_len repeater hashes; return them as hex.
+
+    path_len counts HOPS while the buffer holds hops x hash-width bytes, so
+    the width falls out of the division (1-byte and 2-byte-hash meshes both
+    exist)."""
     if isinstance(path, (bytes, bytearray)):
         raw = path.hex()
     else:
         raw = str(path or "").lower().replace("0x", "")
-    bytes_hex = [raw[i:i + 2] for i in range(0, len(raw), 2)]
-    return [b for b in bytes_hex if len(b) == 2]
+    chars = len(raw) // 2 * 2
+    width = 2
+    if isinstance(path_len, int) and path_len > 0 and chars % path_len == 0 \
+            and chars // path_len in (2, 4):
+        width = chars // path_len
+    hashes = [raw[i:i + width] for i in range(0, chars // width * width, width)]
+    return [h for h in hashes if len(h) == width]
 
 
 def key_to_num(pubkey: Any) -> int:
@@ -607,9 +616,13 @@ class MeshCoreLink(RadioLink):
         # per-relay signal attribution the relays view is built on.
         relay = None
         path = data.get("path") or ""
-        if path and data.get("path_hash_size", 1) == 1:
+        hash_size = data.get("path_hash_size", 1)
+        if path and hash_size in (1, 2):
+            # The relays view keys by the FIRST byte of the delivering
+            # repeater's hash, which is the first byte of its key whatever
+            # the hash width.
             try:
-                relay = int(path[-2:], 16)
+                relay = int(path[-2 * hash_size:][:2], 16)
             except ValueError:
                 relay = None
         hops = None

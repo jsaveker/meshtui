@@ -31,9 +31,9 @@ def is_rebroadcaster(node: Any) -> bool:
     role = (getattr(node, "role", "") or "").upper()
     return any(tag in role for tag in ("REP", "ROUTER", "ROOM"))
 
-# One byte per hop is the MeshCore default; wider hashes are rare and we skip
-# byte resolution for them rather than mis-attribute.
-HASH_SIZE = 1
+# Meshes run 1- or 2-byte per-hop path hashes (the frame says which); a hash
+# is the first byte(s) of the repeater's public key either way.
+HASH_SIZES = (1, 2)
 
 
 @dataclass
@@ -57,7 +57,15 @@ class PathObservation:
         return (int(self.ts), self.kind, self.path, self.hops)
 
     def hop_bytes(self) -> list[str]:
-        return [self.path[i:i + 2] for i in range(0, len(self.path) // 2 * 2, 2)]
+        """One hex hash per hop. The hash width isn't stored - it's derived:
+        hops counts hops (from the frame), path holds hops x width bytes."""
+        if not self.path:
+            return []
+        chars = len(self.path) // 2 * 2
+        width = 2
+        if self.hops and chars % self.hops == 0 and chars // self.hops in (2, 4):
+            width = chars // self.hops
+        return [self.path[i:i + width] for i in range(0, chars // width * width, width)]
 
 
 def split_sender(text: str) -> tuple[str, str]:
@@ -83,20 +91,24 @@ def obs_from_packet(packet: Any) -> PathObservation | None:
     if not isinstance(raw, dict):
         return None
     if packet.portnum == "RXLOG_APP":
-        if raw.get("path_hash_size", HASH_SIZE) != HASH_SIZE:
+        hash_size = raw.get("path_hash_size", 1)
+        if hash_size not in HASH_SIZES:
             return None
         path = str(raw.get("path") or "")
+        # The frame's path_len IS the hop count, whatever the hash width.
+        raw_hops = raw.get("path_len")
+        hops = raw_hops if isinstance(raw_hops, int) else len(path) // (2 * hash_size)
         typename = raw.get("payload_typename")
         if typename == "ADVERT" and raw.get("adv_key"):
             return PathObservation(
                 ts=packet.ts, kind="advert", origin_id=packet.from_id,
                 origin_name=str(raw.get("adv_name") or ""), path=path,
-                hops=len(path) // 2, snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"))
+                hops=hops, snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"))
         if typename == "GRP_TXT":
             name, _ = split_sender(str(raw.get("message") or ""))
             return PathObservation(
                 ts=packet.ts, kind="channel", origin_name=name, path=path,
-                hops=len(path) // 2, snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"))
+                hops=hops, snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"))
         return None
     if packet.portnum == "TEXT_MESSAGE_APP" and raw.get("type") == "CHAN":
         # The frame itself always carries path_len; the byte list appears when
@@ -108,8 +120,7 @@ def obs_from_packet(packet: Any) -> PathObservation | None:
         name, _ = split_sender(str(raw.get("text") or ""))
         return PathObservation(
             ts=packet.ts, kind="channel", origin_name=name, path=path,
-            hops=len(path) // 2 if path else path_len,
-            snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"),
+            hops=path_len, snr=_signal(raw, "snr"), rssi=_signal(raw, "rssi"),
             channel=packet.channel)
     return None
 
@@ -180,10 +191,12 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
     me = state.nodes.get(state.my_node_id or "")
     hops: list[Hop] = []
     for byte in obs.hop_bytes():
-        try:
-            candidates = state.resolve_relay(int(byte, 16))
-        except ValueError:
-            candidates = []
+        # A hash is the leading byte(s) of the repeater's public key, and a
+        # node id is '!' plus the key's first four bytes - so a 2-byte hash
+        # pins down 4 id characters and is rarely ambiguous.
+        wanted = byte.lower()
+        candidates = [n for n in state.nodes.values()
+                      if n.node_id[1:1 + len(wanted)].lower() == wanted]
         # Many nodes share any single byte; only rebroadcasters can be hops,
         # so a lone repeater match is CONFIDENT even when chat nodes share
         # the byte. Prefer positioned (repeaters advertise locations as a

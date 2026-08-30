@@ -130,6 +130,38 @@ check("zero hops answers 'direct'",
 check("missing observation is answered honestly",
       bot_reply(state, None, "A"), "@[A] heard you, but no path data for that message")
 
+# ------------------------------------------------------- two-byte path hashes
+from meshtui.meshcore_link import _split_path
+
+check("hop hashes split by the width the hop count implies",
+      PathObservation(ts=NOW, kind="channel", path="9ef9500e", hops=2).hop_bytes(),
+      ["9ef9", "500e"])
+check("one-byte meshes still split per byte",
+      PathObservation(ts=NOW, kind="channel", path="aabbcc", hops=3).hop_bytes(),
+      ["aa", "bb", "cc"])
+check("_split_path derives the same widths",
+      (_split_path("9ef9500e", 2), _split_path("aabbcc", 3)),
+      (["9ef9", "500e"], ["aa", "bb", "cc"]))
+
+wide = obs_from_packet(Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all",
+                              channel=2, portnum="TEXT_MESSAGE_APP", summary="x",
+                              raw={"type": "CHAN", "text": "Far: !path",
+                                   "path": "9ef9500e", "path_len": 2, "SNR": 3.0}))
+check("frame path_len is the hop count, not the byte count", wide.hops, 2)
+
+wide_state = MeshState()
+wide_state.protocol = "meshcore"
+wide_state.upsert_node({"user": {"id": "!9ef9aaaa", "longName": "Precise Rpt",
+                                 "role": "REPEATER"}})
+wide_state.upsert_node({"user": {"id": "!9e000001", "longName": "Byte Twin",
+                                 "role": "REPEATER"}})
+wide_analysis = analyze(wide_state, wide)
+check("a 2-byte hash resolves past 1-byte collisions",
+      (wide_analysis.hops[0].label, wide_analysis.hops[0].ambiguous),
+      ("Precise Rpt", False))
+check("the reply prints whole hashes",
+      bot_reply(wide_state, wide, "Far").startswith("@[Far] [2h] 9ef9,500e"), True)
+
 # -------------------------------------------------------------- map links
 from meshtui.pathcalc import geojson_url, route_geojson
 
