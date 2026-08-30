@@ -72,6 +72,37 @@ async def main():
         await pilot.pause(0.1)
         check("packet row selectable", feed.selected_packet() is not None, True)
 
+        # follow must track the newest row as packets arrive, and stop when
+        # the user scrolls up (these lived in dead code once - regression)
+        def mk(summary):
+            return Packet(ts=1787871800.0, from_id="!bc20c203", to_id="^all",
+                          portnum="TEXT_MESSAGE_APP", summary=summary, channel=0)
+        feed.follow = True
+        for i in range(30):
+            feed._write_line(mk(f"follow packet {i}"), app.state)
+        await pilot.pause(0.2)
+        check("follow keeps the cursor on the newest row",
+              feed.cursor_row, len(feed._rows) - 1)
+        check("follow keeps the view scrolled to the end",
+              feed.is_vertical_scroll_end, True)
+        feed.action_cursor_up()
+        anchored = feed.cursor_row
+        feed._write_line(mk("while scrolled up"), app.state)
+        await pilot.pause(0.1)
+        check("scrolling up stops the feed from yanking", feed.cursor_row, anchored)
+
+        # the row cap must actually trim (also once dead code)
+        import meshtui.widgets.packets as packets_module
+        real_max = packets_module.MAX_ROWS
+        packets_module.MAX_ROWS = len(feed._rows) + 3
+        try:
+            for i in range(8):
+                feed._write_line(mk(f"cap packet {i}"), app.state)
+            check("the feed trims to its row cap",
+                  len(feed._rows), packets_module.MAX_ROWS)
+        finally:
+            packets_module.MAX_ROWS = real_max
+
     if failures:
         print(f"\nFAIL: {len(failures)}: {', '.join(failures)}")
         return 1

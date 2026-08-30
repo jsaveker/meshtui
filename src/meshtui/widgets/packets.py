@@ -204,6 +204,16 @@ class PacketFeed(DataTable):
         self.add_row(fitted, key=f"p{self._seq}", height=height)
         self._rows.append(packet)
 
+        while len(self._rows) > MAX_ROWS:
+            try:
+                self.remove_row(self.ordered_rows[0].key)
+            except Exception:  # noqa: BLE001 - row already gone
+                pass
+            self._rows.pop(0)
+
+        if self.follow:
+            self.move_cursor(row=len(self._rows) - 1)
+
     def _fit(self, prefix: Text, summary: Text | None = None) -> tuple[Text, int]:
         """Lay a feed line out to the pane width instead of scrolling.
 
@@ -240,13 +250,3 @@ class PacketFeed(DataTable):
             segment.truncate(segment_width, pad=True)
             out.append_text(segment)
         return out, max(1, len(wrapped))
-
-        while len(self._rows) > MAX_ROWS:
-            try:
-                self.remove_row(self.ordered_rows[0].key)
-            except Exception:  # noqa: BLE001 - row already gone
-                pass
-            self._rows.pop(0)
-
-        if self.follow:
-            self.move_cursor(row=len(self._rows) - 1)
