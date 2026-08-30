@@ -247,6 +247,46 @@ bot.route(channel_msg("StaleSender: !path", ts=time.time() - 600))
 check("stale backlog requests are ignored", len(sent), 1)
 bot.close()
 
+# ---------------------------------------------------------------- test bot
+from meshtui.bot import TestBot
+
+service.state.channels = [(0, "Public"), (2, "#bot"), (10, "#testing")]
+service.state.my_node_name = "Tachyon Home"
+tester = TestBot(service, channel="#testing")
+tester.WAIT_STEPS = 1
+tester.WAIT_STEP_SECONDS = 0.0
+sent.clear()
+
+def heard(name, hops, snr=None, path="4c"):
+    service.state.note_path(PathObservation(ts=time.time(), kind="channel",
+                                            origin_name=name, path=path if hops else "",
+                                            hops=hops, snr=snr, channel=10))
+
+heard("Digitaino", 2)
+tester.route(channel_msg("Digitaino: testing fw", channel=10))
+check("a test message gets a hop receipt",
+      sent[-1][0], "@[Digitaino] 2 hops to Tachyon Home")
+check("the receipt goes to the testing channel", sent[-1][1].index, 10)
+
+heard("BCW_A", 0, snr=9.2)
+tester.route(channel_msg("BCW_A: Test", channel=10))
+check("a direct test reports direct with its SNR",
+      sent[-1][0], "@[BCW_A] direct to Tachyon Home (+9.2dB)")
+
+before_len = len(sent)
+tester.route(channel_msg("Digitaino: thanks!", channel=10))
+check("chatter gets no robot reply", len(sent), before_len)
+tester.route(channel_msg("CCS-pocket: @[BCW_A] 4 hops to Paige", channel=10))
+check("another station's receipt gets no reply", len(sent), before_len)
+tester.route(channel_msg('X: 😀 reacted to "Test" @[BCW_A]', channel=10))
+check("reactions get no reply", len(sent), before_len)
+tester.route(channel_msg("Someone: test", channel=2))
+check("tests on other channels are ignored", len(sent), before_len)
+heard("Quiet", 3)
+tester.route(channel_msg("Quiet: test", ts=time.time() - 600, channel=10))
+check("stale test messages are ignored", len(sent), before_len)
+tester.close()
+
 # ------------------------------------------------------------- persistence
 time.sleep(0.5)  # the store flushes on a background cadence
 persisted = store.recent_paths()
@@ -262,7 +302,8 @@ gw = Gateway.__new__(Gateway)
 gw.service = service
 result = gw.handle_request({"command": "paths", "limit": 10})
 check("gateway serves path history",
-      result["ok"] and result["paths"][-1]["origin_name"], "UsefulTowel")
+      result["ok"] and any(r["origin_name"] == "UsefulTowel"
+                           for r in result["paths"]), True)
 
 print()
 print("PASS" if not failures else f"FAIL: {failures}")

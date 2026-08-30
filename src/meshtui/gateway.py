@@ -15,7 +15,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from .bot import BotRouter, OpenAIResponsesProvider, PathBot
+from .bot import BotRouter, OpenAIResponsesProvider, PathBot, TestBot
 from .events import connected_info, event_from_wire, event_to_wire, node_record
 from .meshcore_link import MeshCoreLink, probe_meshcore
 from .model import ChannelRef, DeliveryStatus, DestinationRef, PeerRef, SendReceipt
@@ -127,6 +127,7 @@ class Gateway:
                  socket_path: Path | str | None = None,
                  bot_router: BotRouter | None = None,
                  path_bot: PathBot | None = None,
+                 test_bot: TestBot | None = None,
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
@@ -142,13 +143,13 @@ class Gateway:
         self._subscribers: list[queue.Queue] = []
         self._subs_lock = threading.Lock()
         self.path_bot = path_bot
+        self.test_bot = test_bot
         self.service.attach_link(link)
         self.service.add_listener(self._log_event)
         self.service.add_listener(self._broadcast)
-        if bot_router is not None:
-            self.service.add_listener(bot_router.handle_event)
-        if path_bot is not None:
-            self.service.add_listener(path_bot.handle_event)
+        for bot in (bot_router, path_bot, test_bot):
+            if bot is not None:
+                self.service.add_listener(bot.handle_event)
 
     @staticmethod
     def _log_event(kind: str, payload: Any) -> None:
@@ -344,6 +345,9 @@ class Gateway:
         if self.path_bot is not None:
             self.service.remove_listener(self.path_bot.handle_event)
             self.path_bot.close()
+        if self.test_bot is not None:
+            self.service.remove_listener(self.test_bot.handle_event)
+            self.test_bot.close()
         if self._owns_socket:
             try:
                 if self.socket_path.exists():
@@ -644,6 +648,7 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   protocol: str = "auto", demo: bool = False,
                   socket_path: Path | str | None = None, bot_channel: str | int | None = None,
                   pathbot_channel: str | int | None = None,
+                  testbot_channel: str | int | None = None,
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
     link, selected = choose_gateway_link(
@@ -656,4 +661,5 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
             provider.endpoint = ai_endpoint
         router = BotRouter(service, provider, channel=bot_channel)
     path_bot = PathBot(service, channel=pathbot_channel) if pathbot_channel is not None else None
-    return Gateway(service, link, socket_path, router, path_bot)
+    test_bot = TestBot(service, channel=testbot_channel) if testbot_channel is not None else None
+    return Gateway(service, link, socket_path, router, path_bot, test_bot)

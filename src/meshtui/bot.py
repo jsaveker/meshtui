@@ -350,3 +350,71 @@ class PathBot(BotRouter):
             if obs.kind == "channel" and obs.origin_name == requester:
                 return obs
         return None
+
+
+class TestBot(PathBot):
+    """Acknowledge test transmissions with how far away we heard them.
+
+    A #testing channel exists to answer one question - "did anyone hear me,
+    and from how far?" - so every station that responds gives the tester one
+    more data point: '@[Name] 3 hops to Tachyon Home'. Answers only messages
+    that look like tests (the channel also carries human chatter and
+    reactions, which deserve no robot reply), under the same good-neighbor
+    rules as the pathbot.
+    """
+
+    TRIGGER_WORDS = ("test", "ping", "radio check")
+
+    def __init__(self, service: MeshService, *, channel: str | int = "#testing",
+                 cooldown_seconds: float = 120.0,
+                 max_requests_per_hour: int = 30) -> None:
+        super().__init__(service, channel=channel,
+                         cooldown_seconds=cooldown_seconds,
+                         max_requests_per_hour=max_requests_per_hour)
+
+    def _eligible(self, message: ChatMessage) -> bool:
+        if message.outgoing or message.is_dm:
+            return False
+        if not self._channel_matches(message.channel):
+            return False
+        if message.ts and time.time() - message.ts > self.MAX_REQUEST_AGE:
+            return False
+        sender, body = split_sender(message.text)
+        if not sender or not body:
+            return False
+        if body.startswith("@[") or "reacted to" in body:
+            return False  # another station's reply, or a reaction
+        lowered = body.casefold()
+        return any(word in lowered for word in self.TRIGGER_WORDS)
+
+    def route(self, message: ChatMessage) -> list:
+        if not self._eligible(message) or not self._claim(self._fingerprint(message)):
+            return []
+        requester, _ = split_sender(message.text)
+        if not self._within_rate_limit(requester or message.from_id):
+            return []
+        obs = None
+        for _ in range(self.WAIT_STEPS):
+            obs = self._find_observation(requester)
+            if obs is not None:
+                break
+            time.sleep(self.WAIT_STEP_SECONDS)
+        if obs is None:
+            # We saw the message but have no reception data - better silent
+            # than a receipt with nothing in it.
+            return []
+        state = self.service.state
+        station = state.my_node_name or "this station"
+        if obs.hops <= 0:
+            reply = f"@[{requester}] direct to {station}"
+            if obs.snr is not None:
+                reply += f" ({obs.snr:+.1f}dB)"
+        else:
+            reply = (f"@[{requester}] {obs.hops} "
+                     f"hop{'s' if obs.hops > 1 else ''} to {station}")
+        destination = ChannelRef(state.protocol, message.channel,
+                                 state.channel_name(message.channel))
+        limit = protocol_payload_limit(destination.protocol)
+        text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
+        log.info("testbot: %s", text)
+        return [self.service.send_message(text, destination)]
