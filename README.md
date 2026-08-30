@@ -73,7 +73,7 @@ Press `x` to open the MeshCore administration screen. Select a repeater or room
 server, enter `login <password>`, and send the console commands supported by that
 node's firmware. Shortcuts request status, telemetry, neighbours, and logout.
 
-Replies travel over LoRa, so they can take seconds or be lost. The session log
+Replies travel over LoRa®, so they can take seconds or be lost. The session log
 records exactly what returned and survives restarts. Text entered after `login`,
 `password`, `passwd`, or `pass` is redacted before it reaches memory or SQLite.
 
@@ -329,15 +329,23 @@ radio ecosystems:
   explicit routing, and remote-repeater ideas that make serious RF operations
   possible from a terminal.
 
+Both projects stand on a deeper radio foundation. [LoRa® technology](https://blog.semtech.com/a-brief-history-of-lora-three-inventors-share-their-personal-story-at-the-things-conference)
+was pioneered at Cycleo by Nicolas Sornin, Olivier Seller, and François Sforza,
+then developed into production silicon by Semtech. Both firmware stacks use
+[RadioLib](https://github.com/jgromes/RadioLib), created by
+[Jan Gromeš](https://github.com/jgromes) and sustained by its contributors.
+
 Thank you to their maintainers, contributors, testers, documentarians, and radio
-operators. MeshTUI would not exist without the software and field knowledge they
-share.
+operators—and to the hardware makers who turn all that careful work into radios
+people can actually use. MeshTUI would not exist without the software, silicon,
+hardware, and field knowledge they share.
 
 MeshTUI is not affiliated with or endorsed by the Meshtastic project. It is not
 affiliated with, sponsored by, or endorsed by the MeshCore project. Meshtastic®
 is a registered trademark of Meshtastic LLC. MeshCore™ is used solely to describe
-compatibility. Each upstream project's code and documentation remains governed
-by its own licenses and terms.
+compatibility. LoRa® is a registered trademark or service mark of Semtech
+Corporation or its affiliates. Each upstream project's code and documentation
+remains governed by its own licenses and terms.
 
 ## Development
 
