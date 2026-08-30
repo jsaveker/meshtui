@@ -110,6 +110,33 @@ async def main():
         await pilot.pause(0.2)
         check("pagedown returns to live-follow", log.is_vertical_scroll_end, True)
 
+        print("\\n@mention autocomplete")
+        st.upsert_node({"user": {"id": "!aa000001", "longName": "Pyratik_T1000"},
+                        "lastHeard": time.time()})
+        st.upsert_node({"user": {"id": "!aa000002", "longName": "Pyratik_Base"},
+                        "lastHeard": time.time() - 60})
+        st.add_chat(ChatMessage(ts=time.time(), from_id="channel:5:anonymous",
+                                from_name="", to_id="^all",
+                                text="🤷NBDY: chatty person", channel=5))
+        inp.focus(); await pilot.pause(0.2)
+        inp.value = ""
+        await pilot.press("@", "p", "y", "r"); await pilot.pause(0.2)
+        check("typing @partial shows candidates on the border",
+              "Pyratik_T1000" in str(inp.border_subtitle), True)
+        await pilot.press("tab"); await pilot.pause(0.2)
+        check("tab completes the bracketed mention", inp.value, "@[Pyratik_T1000] ")
+        await pilot.press("tab"); await pilot.pause(0.2)
+        check("tab again cycles to the next candidate", inp.value, "@[Pyratik_Base] ")
+        inp.value = "hello "
+        inp.cursor_position = len(inp.value)
+        await pilot.press("@", "n", "b", "d"); await pilot.pause(0.2)
+        await pilot.press("tab"); await pilot.pause(0.2)
+        check("substring match reaches emoji-led names mid-message",
+              inp.value, "hello @[🤷NBDY] ")
+        check("hints clear after completion... until the next @",
+              inp._mention_query() is None, True)
+        inp.value = ""
+
         print("\\ncorner and overlay stay in sync")
         await pilot.press("escape"); await pilot.pause(0.3)
         check("overlay closed", isinstance(app.screen, ChatScreen), False)

@@ -10,6 +10,8 @@ overlay reuses them; only the pane itself changed to a monitor.
 
 from __future__ import annotations
 
+import re
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -33,18 +35,116 @@ class OpenChatOverlay(Message):
     """The user asked to expand chat to the full-screen overlay."""
 
 
-class ChatInput(Input):
-    """Message box that can be escaped from.
+MENTION = re.compile(r"@\[?([^\]@]{0,40})$")
 
-    Used by the pop-out overlay. While it has focus every printable key is
-    text, so the single-letter app bindings are unreachable - `escape` is the
-    documented way back out.
+
+class ChatInput(Input):
+    """Message box that can be escaped from, with @mention completion.
+
+    While it has focus every printable key is text, so the single-letter app
+    bindings are unreachable - `escape` is the documented way back out.
+
+    Typing `@` (plus any part of a name - substring, so emoji-led names are
+    reachable) shows candidates on the border; Tab inserts the first as
+    `@[Name] ` and cycles through the rest. Names come from the node table
+    and from senders seen in chat, newest first.
     """
 
     BINDINGS = [Binding("escape", "leave", "leave chat")]
 
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._hits: list[str] = []
+        self._cycle_hits: list[str] = []
+        self._cycle_index = 0
+        self._cycle_value: str | None = None
+        self._cycle_start = 0
+
     def action_leave(self) -> None:
         self.post_message(LeaveChat())
+
+    # ---------------------------------------------------------- mentions
+
+    def _mention_query(self) -> tuple[int, str] | None:
+        """The '@partial' being typed at the cursor: (start offset, partial)."""
+        matched = MENTION.search(self.value[: self.cursor_position])
+        return (matched.start(), matched.group(1)) if matched else None
+
+    def _known_names(self) -> list[tuple[float, str]]:
+        state = getattr(self.app, "state", None)
+        if state is None:
+            return []
+        names: list[tuple[float, str]] = []
+        for node in state.nodes.values():
+            if node.long_name:
+                names.append((node.last_heard or 0.0, node.long_name))
+        # People talking on channels may not be in the node table at all -
+        # and they are exactly who you want to @.
+        from ..pathcalc import split_sender
+        for message in state.chat:
+            sender, _ = split_sender(message.text)
+            if sender:
+                names.append((message.ts, sender))
+            elif message.from_name:
+                names.append((message.ts, message.from_name))
+        return names
+
+    def _candidates(self, partial: str) -> list[str]:
+        wanted = partial.casefold()
+        starts: dict[str, float] = {}
+        contains: dict[str, float] = {}
+        for ts, name in self._known_names():
+            folded = name.casefold()
+            if wanted and wanted not in folded:
+                continue
+            bucket = starts if folded.startswith(wanted) else contains
+            if ts >= bucket.get(name, -1.0):
+                bucket[name] = ts
+        rank = lambda bucket: [n for n, _ in sorted(bucket.items(),
+                                                    key=lambda kv: -kv[1])]
+        merged = rank(starts) + [n for n in rank(contains) if n not in starts]
+        return merged[:6]
+
+    def _refresh_hints(self) -> None:
+        query = self._mention_query()
+        self._hits = self._candidates(query[1]) if query else []
+        if self._hits:
+            shown = "  ".join(self._hits[:4])
+            self.border_subtitle = f" {shown[:70]}  ⇥ complete "
+        else:
+            self.border_subtitle = ""
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self.value != self._cycle_value:
+            self._cycle_value = None  # any edit ends a Tab cycle
+        self._refresh_hints()
+
+    def _complete_mention(self) -> None:
+        if self._cycle_value is not None and self.value == self._cycle_value:
+            # Tab again: swap in the next candidate.
+            self._cycle_index = (self._cycle_index + 1) % len(self._cycle_hits)
+            start = self._cycle_start
+        else:
+            query = self._mention_query()
+            if query is None or not self._hits:
+                return
+            start, self._cycle_hits, self._cycle_index = query[0], self._hits, 0
+            self._cycle_start = start
+        name = self._cycle_hits[self._cycle_index]
+        completed = f"{self.value[:start]}@[{name}] "
+        self.value = completed
+        self.cursor_position = len(completed)
+        self._cycle_value = completed
+
+    async def _on_key(self, event) -> None:
+        if event.key == "tab":
+            in_cycle = self._cycle_value is not None and self.value == self._cycle_value
+            if in_cycle or (self._mention_query() and self._hits):
+                event.stop()
+                event.prevent_default()
+                self._complete_mention()
+                return
+        await super()._on_key(event)
 
 
 class ChatHeader(Static):
