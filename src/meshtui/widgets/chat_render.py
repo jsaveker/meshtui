@@ -15,6 +15,7 @@ from typing import Iterable
 from rich.text import Text
 
 from ..model import ChatMessage, DeliveryStatus
+from ..pathcalc import split_sender
 from ..state import MeshState
 
 # Consecutive messages from the same sender within this many seconds share a
@@ -27,7 +28,22 @@ INDENT = "  "
 def _sender(msg: ChatMessage, state: MeshState) -> str:
     if msg.outgoing:
         return "you"
+    if msg.from_id.startswith("channel:"):
+        # MeshCore channel messages carry no sender on the wire - the name is
+        # embedded in the text ('Name: message'). Show the person, not the
+        # placeholder id; _body() strips the prefix so it isn't said twice.
+        name, _ = split_sender(msg.text)
+        return name or "anonymous"
     return msg.from_name or state.node_name(msg.from_id)
+
+
+def _body(msg: ChatMessage) -> str:
+    """The message text, minus the sender prefix when it became the header."""
+    if not msg.outgoing and msg.from_id.startswith("channel:"):
+        name, rest = split_sender(msg.text)
+        if name:
+            return rest
+    return msg.text
 
 
 def write_conversation(
@@ -66,7 +82,7 @@ def write_conversation(
             if prev_key is not None:
                 log.write(Text(""))  # blank line between speakers
             log.write(_header(msg, sender, state, show_channel))
-        for line in msg.text.splitlines() or [""]:
+        for line in _body(msg).splitlines() or [""]:
             body = Text(INDENT, no_wrap=False, overflow="fold")
             body.append(line, style="white" if not msg.outgoing else "grey85")
             log.write(body)
