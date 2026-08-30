@@ -157,12 +157,21 @@ class ChatScreen(Screen[None]):
             switched = self._rendered_sig is None or self._rendered_sig[0] != target
             at_end = switched or log.is_vertical_scroll_end
             scroll_y = log.scroll_y
-            write_conversation(log, messages, self.state,
-                               show_channel=(target[0] == "all"))
+            # RichLog.write schedules a scroll-to-end for every row when
+            # auto_scroll is enabled.  Restoring scroll_y after the refresh is
+            # racy with those queued callbacks, so disable them while rebuilding
+            # history for a reader who has deliberately scrolled back.
+            auto_scroll = log.auto_scroll
+            if not at_end:
+                log.auto_scroll = False
+            try:
+                write_conversation(log, messages, self.state,
+                                   show_channel=(target[0] == "all"))
+            finally:
+                log.auto_scroll = auto_scroll
             self._rendered_sig = sig
             if not at_end:
-                self.call_after_refresh(
-                    lambda: log.scroll_to(y=scroll_y, animate=False))
+                log.scroll_to(y=scroll_y, animate=False, force=True, immediate=True)
         label = self.state.target_label(target)
         self.query_one("#ov-log", RichLog).border_title = label
         self.query_one("#ov-status", Static).update(

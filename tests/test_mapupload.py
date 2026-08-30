@@ -104,6 +104,14 @@ check("chat-node adverts stay off the map", uploader.process(chat), False)
 forged = dict(raw, adv_key="ee" * 32, pkt_payload=bytes(tampered),
               payload="", raw_hex="")
 check("an unverifiable advert is refused", uploader.process(forged), False)
+key_mismatch = dict(raw, adv_key="ee" * 32)
+check("metadata key must match the signed advert", uploader.process(key_mismatch), False)
+check("malformed timestamps are ignored rather than crashing the worker",
+      uploader.process(dict(raw, adv_timestamp="not-a-timestamp")), False)
+check("malformed public keys are ignored rather than crashing the worker",
+      uploader.process(dict(raw, adv_key="not-hex")), False)
+check("malformed advert types are ignored rather than crashing the worker",
+      uploader.process(dict(raw, adv_type="not-a-type")), False)
 
 keyless = MapUploader(FakeService(), type("L", (), {"identity_key": "", "public_key": ""})())
 keyless._post = lambda e: True

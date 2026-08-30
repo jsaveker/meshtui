@@ -173,12 +173,20 @@ class MapUploader:
             return
         self._executor.submit(self.process, dict(raw))
 
-    def _eligible(self, raw: dict) -> tuple[str, str] | None:
-        adv_key = str(raw.get("adv_key") or "")
+    def _eligible(self, raw: dict) -> tuple[str, str, int] | None:
+        adv_key = str(raw.get("adv_key") or "").lower().removeprefix("0x")
         adv_timestamp = raw.get("adv_timestamp")
         if not adv_key or adv_timestamp is None:
             return None
-        if int(raw.get("adv_type", 0)) == ADV_TYPE_CHAT:
+        try:
+            key_bytes = bytes.fromhex(adv_key)
+            timestamp = int(adv_timestamp)
+            advert_type = int(raw.get("adv_type", 0))
+        except (TypeError, ValueError):
+            return None
+        if len(key_bytes) != 32 or timestamp < 0:
+            return None
+        if advert_type == ADV_TYPE_CHAT:
             return None
         raw_hex = raw.get("payload") or ""
         if isinstance(raw_hex, (bytes, bytearray)):
@@ -191,18 +199,18 @@ class MapUploader:
             previous = self._seen.get(adv_key)
             if previous is not None:
                 prev_ts, uploaded_at = previous
-                if int(adv_timestamp) <= prev_ts:
+                if timestamp <= prev_ts:
                     return None  # replay of an old advert
                 if time.time() - uploaded_at < REPLAY_COOLDOWN_SECONDS:
                     return None  # freshly uploaded already
-        return adv_key, str(raw_hex)
+        return adv_key, str(raw_hex), timestamp
 
     def process(self, raw: dict) -> bool:
         """Verify, sign, and upload one heard advert. Returns success."""
         eligible = self._eligible(raw)
         if eligible is None:
             return False
-        adv_key, raw_hex = eligible
+        adv_key, raw_hex, adv_timestamp = eligible
 
         pkt_payload = raw.get("pkt_payload")
         if isinstance(pkt_payload, str):
@@ -215,6 +223,16 @@ class MapUploader:
             if extracted is None or not verify_advert(extracted):
                 log.debug("map upload: advert signature failed for %s", adv_key[:12])
                 return False
+            pkt_payload = extracted
+
+        # adv_key is parser metadata, while pkt_payload is the data whose
+        # signature we actually verified.  Tie the two together before using
+        # adv_key for replay suppression or publishing the raw packet.  Without
+        # this check a malformed parser event could pair a valid signature with
+        # another node's identity.
+        if bytes(pkt_payload)[:32].hex() != adv_key:
+            log.debug("map upload: advert key does not match signed payload")
+            return False
 
         identity = str(getattr(self.link, "identity_key", "") or "")
         public_key = str(getattr(self.link, "public_key", "") or "").lower()
@@ -245,7 +263,7 @@ class MapUploader:
         if not self._post(envelope):
             return False
         with self._lock:
-            self._seen[adv_key] = (int(raw.get("adv_timestamp") or 0), time.time())
+            self._seen[adv_key] = (adv_timestamp, time.time())
             while len(self._seen) > SEEN_MAX:
                 self._seen.pop(next(iter(self._seen)))
         self.uploads += 1
