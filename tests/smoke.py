@@ -311,7 +311,12 @@ async def main() -> int:
 
     store3 = Store(db, flush_interval=0.3)
     assert store3.open()
-    app3 = MeshTUI(demo=False, store=store3, protocol="meshtastic")
+    # A port that cannot exist: with no port given the app autodetects, and on
+    # a machine with a real radio plugged in the connect worker would open it
+    # with the wrong protocol and block forever - hanging the interpreter at
+    # exit long after PASS was printed. These sections only test restore logic.
+    NO_RADIO = "/dev/meshtui-smoke-no-radio"
+    app3 = MeshTUI(demo=False, store=store3, protocol="meshtastic", port=NO_RADIO)
     async with app3.run_test(size=(160, 48)) as pilot3:
         await pilot3.pause(1.5)
         st3 = app3.state
@@ -333,7 +338,7 @@ async def main() -> int:
     # --- observations must not carry over between radios ---
     store4 = Store(db, flush_interval=0.3)
     assert store4.open()
-    app4 = MeshTUI(demo=False, store=store4, protocol="meshtastic")
+    app4 = MeshTUI(demo=False, store=store4, protocol="meshtastic", port=NO_RADIO)
     async with app4.run_test(size=(160, 48)) as pilot4:
         await pilot4.pause(1.0)
         inherited = len([n for n in app4.state.nodes.values() if n.snr_history])
