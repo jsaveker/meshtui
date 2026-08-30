@@ -255,21 +255,27 @@ def bot_reply(state: Any, obs: PathObservation | None, requester: str) -> str:
 # ------------------------------------------------------------------ map link
 
 def route_geojson(analysis: PathAnalysis) -> dict | None:
-    """The positioned route as a FeatureCollection geojson.io can render."""
+    """The positioned route as a FeatureCollection geojson.io can render.
+
+    Property names follow simplestyle the way the mesh's other pathbots'
+    working links do: `title` for labels, numbered `marker-symbol` per stop.
+    """
     points = analysis.points()
     if len(points) < 2:
         return None
     colors = {"origin": "#2ecc71", "hop": "#f1c40f", "me": "#3498db"}
     features: list[dict] = [{
-        "type": "Feature", "properties": {"name": "route"},
+        "type": "Feature", "properties": {"title": "route"},
         "geometry": {"type": "LineString",
                      "coordinates": [[round(lon, 5), round(lat, 5)]
                                      for lat, lon, _, _ in points]},
     }]
-    for lat, lon, label, role in points:
+    for index, (lat, lon, label, role) in enumerate(points, start=1):
         features.append({
             "type": "Feature",
-            "properties": {"name": label, "marker-color": colors.get(role, "#aaaaaa")},
+            "properties": {"title": f"{index}. {label}",
+                           "marker-symbol": str(index),
+                           "marker-color": colors.get(role, "#aaaaaa")},
             "geometry": {"type": "Point",
                          "coordinates": [round(lon, 5), round(lat, 5)]},
         })
@@ -278,9 +284,15 @@ def route_geojson(analysis: PathAnalysis) -> dict | None:
 
 def geojson_url(geojson: dict) -> str:
     """geojson.io renders JSON carried in its own URL fragment - the payload
-    never leaves the viewer's browser except to the map-tile provider."""
+    never leaves the viewer's browser except to the map-tile provider.
+
+    base64, not percent-encoding: geojson.io's fragment decoding leaves some
+    percent-escapes intact, which breaks its JSON parse ('unterminated
+    string'), while base64 data URIs - what the other bots' working links
+    use - survive every URL layer untouched."""
+    import base64 as _base64
     import json as _json
-    from urllib.parse import quote
 
     payload = _json.dumps(geojson, separators=(",", ":"))
-    return "https://geojson.io/#data=data:application/json," + quote(payload, safe="")
+    encoded = _base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    return "https://geojson.io/#data=data:application/json;base64," + encoded

@@ -6,7 +6,7 @@ persisted, and answered on the bot channel in the dialect the mesh's other
 pathbots speak - with the good-neighbor rules (one reply per request, cooldown,
 never answering another bot) actually enforced.
 """
-import os, sys, tempfile, time, types
+import json, os, sys, tempfile, time, types
 
 from meshtui.bot import PathBot
 from meshtui.model import Packet
@@ -189,9 +189,15 @@ line = geo["features"][0]["geometry"]["coordinates"]
 check("coordinates are lon,lat in travel order",
       (line[0], line[-1]), ([-97.9, 30.0], [-97.92, 30.34]))
 url = geojson_url(geo)
-check("map url targets geojson.io's data fragment",
-      url.startswith("https://geojson.io/#data=data:application/json,")
-      and " " not in url, True)
+check("map url is a base64 data URI (percent-encoding breaks geojson.io)",
+      url.startswith("https://geojson.io/#data=data:application/json;base64,")
+      and "%" not in url and " " not in url, True)
+import base64 as _b64
+decoded = json.loads(_b64.b64decode(url.split(";base64,", 1)[1]))
+check("the base64 payload round-trips exactly", decoded, geo)
+check("stops carry simplestyle titles and numbered symbols",
+      (decoded["features"][1]["properties"].get("title", "").startswith("1. "),
+       decoded["features"][1]["properties"].get("marker-symbol")), (True, "1"))
 check("no route means no map",
       route_geojson(analyze(state, PathObservation(ts=NOW, kind="channel", hops=0))),
       None)
