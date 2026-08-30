@@ -55,7 +55,11 @@ def run_gateway(argv: list[str]) -> int:
 
     # systemd stops a service with SIGTERM; turn it into the same clean exit as
     # Ctrl-C so the radio and socket are released and the next start is clean.
+    # Disarm after the first delivery: a signal that lands while the finally
+    # block is already cleaning up would escape as a traceback and mark the
+    # unit failed (exit 130) over nothing.
     def _graceful(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _graceful)
     logging.basicConfig(
@@ -91,8 +95,13 @@ def run_gateway(argv: list[str]) -> int:
         print(f"gateway failed: {exc}", file=sys.stderr)
         return 1
     finally:
-        gateway.stop()
-        store.close()
+        # A late SIGTERM (or an impatient Ctrl-C) during cleanup must not
+        # abort it - a half-stopped gateway leaves the radio and socket dirty.
+        try:
+            gateway.stop()
+            store.close()
+        except KeyboardInterrupt:
+            pass
     return 0
 
 
