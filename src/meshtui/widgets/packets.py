@@ -194,32 +194,50 @@ class PacketFeed(DataTable):
             # Opened with a key that is published upstream - flag it so this is
             # never mistaken for traffic that was actually private.
             line.append("[pub] ", style="bold red")
-        line.append(
+        summary = Text(
             packet.summary,
             style="white" if packet.portnum == "TEXT_MESSAGE_APP" else "grey70",
         )
 
-        fitted, height = self._fit(line)
+        fitted, height = self._fit(line, summary)
         self._seq += 1
         self.add_row(fitted, key=f"p{self._seq}", height=height)
         self._rows.append(packet)
 
-    def _fit(self, line: Text) -> tuple[Text, int]:
-        """Wrap a feed line to the pane width instead of scrolling or cutting.
+    def _fit(self, prefix: Text, summary: Text | None = None) -> tuple[Text, int]:
+        """Lay a feed line out to the pane width instead of scrolling.
 
+        A long summary wraps with a hanging indent so continuation lines stay
+        in the summary column and the time/port/route columns keep their grid.
         Sized to the content region minus the cell padding, or the row
         overflows by a few cells and summons a horizontal scrollbar."""
         region = self.scrollable_content_region.width or (self.size.width - 3)
         width = max(20, region - 2)
-        if line.cell_len <= width:
-            line.truncate(width, pad=True)
-            return line, 1
-        wrapped = line.wrap(self.app.console, width)
-        out = Text()
+        indent = prefix.cell_len
+        hang = summary is not None and indent <= width - 16
+        if hang:
+            out = prefix.copy()
+            wrapped = summary.wrap(self.app.console, width - indent)
+            segment_width = width - indent
+        else:
+            # No summary column (a notice), or a pane too narrow to keep the
+            # grid: wrap the whole line flat.
+            line = prefix.copy()
+            if summary is not None:
+                line.append_text(summary)
+            if line.cell_len <= width:
+                line.truncate(width, pad=True)
+                return line, 1
+            out = Text()
+            wrapped = line.wrap(self.app.console, width)
+            segment_width = width
+        pad = " " * indent
         for index, segment in enumerate(wrapped):
             if index:
                 out.append("\n")
-            segment.truncate(width, pad=True)
+                if hang:
+                    out.append(pad)
+            segment.truncate(segment_width, pad=True)
             out.append_text(segment)
         return out, max(1, len(wrapped))
 
