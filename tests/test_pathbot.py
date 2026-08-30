@@ -278,15 +278,17 @@ tester.WAIT_STEPS = 1
 tester.WAIT_STEP_SECONDS = 0.0
 sent.clear()
 
-def heard(name, hops, snr=None, path="4c"):
+def heard(name, hops, snr=None, path=""):
     service.state.note_path(PathObservation(ts=time.time(), kind="channel",
-                                            origin_name=name, path=path if hops else "",
+                                            origin_name=name, path=path,
                                             hops=hops, snr=snr, channel=10))
 
-heard("Digitaino", 2)
+tester._map_link = lambda analysis: "https://da.gd/mapx"
+heard("Digitaino", 2, path="4c82")
 tester.route(channel_msg("Digitaino: testing fw", channel=10))
-check("a test message gets a hop receipt",
-      sent[-1][0], "@[Digitaino] 2 hops to Tachyon Home")
+check("a test receipt carries the pathbot's journey detail",
+      sent[-1][0],
+      "@[Digitaino] 2 hops to Tachyon Home: 4c,82 (0/2), https://da.gd/mapx")
 check("the receipt goes to the testing channel", sent[-1][1].index, 10)
 
 heard("BCW_A", 0, snr=9.2)
@@ -297,6 +299,7 @@ check("a direct test reports direct with its SNR",
 located = TestBot(service, channel="#testing", location="Steiner Ranch")
 located.WAIT_STEPS = 1
 located.WAIT_STEP_SECONDS = 0.0
+located._map_link = lambda analysis: None
 heard("Wanderer", 3)
 located.route(channel_msg("Wanderer: radio check", channel=10))
 check("a configured place name rides in the receipt",

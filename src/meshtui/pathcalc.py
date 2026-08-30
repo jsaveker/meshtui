@@ -229,6 +229,24 @@ def fmt_mi(km: float) -> str:
     return f"~{km * KM_TO_MI:.1f}mi"
 
 
+def path_details(state: Any, obs: PathObservation) -> tuple[str, PathAnalysis]:
+    """The journey tail both bots share: ' aa,bb route: ~Xmi, direct: ~Ymi (r/n)'."""
+    analysis = analyze(state, obs)
+    tail = ""
+    if obs.path:
+        tail += " " + ",".join(obs.hop_bytes())
+    details = []
+    if analysis.route_km:
+        details.append(f"route: {fmt_mi(analysis.route_km)}")
+    if analysis.direct_km:
+        details.append(f"direct: {fmt_mi(analysis.direct_km)}")
+    if details:
+        tail += " " + ", ".join(details)
+    if obs.path and analysis.resolved < obs.hops:
+        tail += f" ({analysis.resolved}/{obs.hops})"
+    return tail, analysis
+
+
 def bot_reply(state: Any, obs: PathObservation | None, requester: str) -> str:
     """The !path answer, in the dialect the mesh's other pathbots speak."""
     who = f"@[{requester}]" if requester else "@[?]"
@@ -236,20 +254,8 @@ def bot_reply(state: Any, obs: PathObservation | None, requester: str) -> str:
         return f"{who} heard you, but no path data for that message"
     if obs.hops <= 0:
         return f"{who} direct (no path)"
-    analysis = analyze(state, obs)
-    reply = f"{who} [{obs.hops}h]"
-    if obs.path:
-        reply += " " + ",".join(obs.hop_bytes())
-    details = []
-    if analysis.route_km:
-        details.append(f"route: {fmt_mi(analysis.route_km)}")
-    if analysis.direct_km:
-        details.append(f"direct: {fmt_mi(analysis.direct_km)}")
-    if details:
-        reply += " " + ", ".join(details)
-    if obs.path and analysis.resolved < obs.hops:
-        reply += f" ({analysis.resolved}/{obs.hops})"
-    return reply
+    tail, _ = path_details(state, obs)
+    return f"{who} [{obs.hops}h]{tail}"
 
 
 # ------------------------------------------------------------------ map link

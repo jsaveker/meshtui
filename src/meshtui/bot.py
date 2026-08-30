@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .model import BROADCAST, ChannelRef, ChatMessage, PeerRef, payload_bytes
-from .pathcalc import analyze, bot_reply, geojson_url, route_geojson, split_sender
+from .pathcalc import (analyze, bot_reply, geojson_url, path_details,
+                       route_geojson, split_sender)
 from .radio import protocol_payload_limit
 from .service import MeshService
 
@@ -411,16 +412,24 @@ class TestBot(PathBot):
         station = state.my_node_name or "this station"
         if self.location:
             station = f"{station} ({self.location})"
+        destination = ChannelRef(state.protocol, message.channel,
+                                 state.channel_name(message.channel))
+        limit = protocol_payload_limit(destination.protocol)
         if obs.hops <= 0:
             reply = f"@[{requester}] direct to {station}"
             if obs.snr is not None:
                 reply += f" ({obs.snr:+.1f}dB)"
         else:
+            # Same journey detail as the pathbot: hop hashes, distances,
+            # resolution fraction, map link - a receipt worth getting.
+            tail, analysis = path_details(state, obs)
             reply = (f"@[{requester}] {obs.hops} "
-                     f"hop{'s' if obs.hops > 1 else ''} to {station}")
-        destination = ChannelRef(state.protocol, message.channel,
-                                 state.channel_name(message.channel))
-        limit = protocol_payload_limit(destination.protocol)
+                     f"hop{'s' if obs.hops > 1 else ''} to {station}"
+                     + (f":{tail}" if tail else ""))
+            if obs.path:
+                link = self._map_link(analysis)
+                if link and payload_bytes(f"{reply}, {link}") <= limit:
+                    reply = f"{reply}, {link}"
         text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
         log.info("testbot: %s", text)
         return [self.service.send_message(text, destination)]
