@@ -250,7 +250,7 @@ class BotRouter:
         return [self.service.send_message(reply, destination) for reply in replies]
 
 
-PATH_TRIGGERS = ("!path", "path?", "pathbot")
+PATH_TRIGGERS = ("!path", "path", "path?", "pathbot")
 
 
 class PathBot(BotRouter):
@@ -289,7 +289,13 @@ class PathBot(BotRouter):
         _, command = split_sender(message.text)
         if command.startswith("@["):  # another bot's reply
             return False
-        return command.strip().casefold() in PATH_TRIGGERS
+        # People call it several ways - '!path', 'Pathbot', 'Pathbot f',
+        # bare 'Path' - so match the first word plus at most one short
+        # argument; a sentence that merely starts with 'path' stays a
+        # sentence, not a summons.
+        tokens = command.strip().casefold().split()
+        return (bool(tokens) and tokens[0] in PATH_TRIGGERS
+                and len(tokens) <= 2 and len(tokens[1] if len(tokens) > 1 else "") <= 8)
 
     def route(self, message: ChatMessage) -> list:
         if not self._eligible(message) or not self._claim(self._fingerprint(message)):

@@ -266,6 +266,26 @@ bot.route(channel_msg("Someone: !path", channel=0))
 check("other channels are ignored", len(sent), 1)
 bot.route(channel_msg("StaleSender: !path", ts=time.time() - 600))
 check("stale backlog requests are ignored", len(sent), 1)
+
+# the mesh's other calling conventions
+count = len(sent)
+service.receive_packet(Packet(ts=time.time(), from_id="channel:2:anonymous",
+                              to_id="^all", channel=2, portnum="TEXT_MESSAGE_APP",
+                              summary="x", raw={"type": "CHAN",
+                                                "text": "Ave Maritza: Pathbot f",
+                                                "path": "82", "path_len": 1,
+                                                "SNR": 2.0}))
+bot.route(channel_msg("Ave Maritza: Pathbot f"))
+check("'Pathbot f' is answered", len(sent), count + 1)
+service.receive_packet(Packet(ts=time.time(), from_id="channel:2:anonymous",
+                              to_id="^all", channel=2, portnum="TEXT_MESSAGE_APP",
+                              summary="x", raw={"type": "CHAN", "text": "Shap: Path",
+                                                "path": "82", "path_len": 1,
+                                                "SNR": 2.0}))
+bot.route(channel_msg("Shap: Path"))
+check("bare 'Path' is answered", len(sent), count + 2)
+bot.route(channel_msg("Chatty: path finding on this mesh is neat"))
+check("a sentence starting with 'path' is not a summons", len(sent), count + 2)
 bot.close()
 
 # ------------------------------------------------- payload-budget ladder
@@ -357,8 +377,8 @@ time.sleep(0.5)  # the store flushes on a background cadence
 persisted = store.recent_paths()
 check("observations are persisted", len(persisted) >= 1, True)
 check("a persisted row survives the round trip",
-      (persisted[-1].origin_name, persisted[-1].path, persisted[-1].hops),
-      ("UsefulTowel", "4c", 1))
+      any((o.origin_name, o.path, o.hops) == ("UsefulTowel", "4c", 1)
+          for o in persisted), True)
 store.close()
 
 # -------------------------------------------------------- gateway command
