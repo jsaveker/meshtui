@@ -127,12 +127,18 @@ class PacketFeed(DataTable):
 
     def on_resize(self) -> None:
         # Packet lines are padded to the pane width, so a resize re-renders
-        # them. Rows are either a Packet or a notice's Text; only packets are
-        # re-laid-out, notices are re-added verbatim.
+        # them - after the reflow, so the new region width is readable.
+        self.call_after_refresh(self._relayout)
+
+    def _relayout(self) -> None:
         if not self._rows:
             return
         rows = list(self._rows)
-        self.clear()
+        keep = self.cursor_row
+        # columns=True: DataTable keeps the widest cell it ever saw per
+        # column, so shrinking would leave a phantom horizontal scrollbar.
+        self.clear(columns=True)
+        self.add_column("line", key="line")
         self._rows = []
         state = self.app.state  # type: ignore[attr-defined]
         for row in rows:
@@ -140,6 +146,8 @@ class PacketFeed(DataTable):
                 self._write_line(row, state)
             else:
                 self._readd_notice(row)
+        if self._rows:
+            self.move_cursor(row=min(max(keep, 0), len(self._rows) - 1))
 
     def write_notice(self, text: str, style: str = "grey62") -> None:
         """Put a non-packet line in the feed (errors, status, traceroute)."""
@@ -149,7 +157,10 @@ class PacketFeed(DataTable):
 
     def _readd_notice(self, renderable: Text) -> None:
         self._seq += 1
-        self.add_row(renderable, key=f"n{self._seq}")
+        region = self.scrollable_content_region.width or (self.size.width - 3)
+        shown = renderable.copy()
+        shown.truncate(max(20, region - 2))
+        self.add_row(shown, key=f"n{self._seq}")
         # Store the renderable itself, not None, so a resize can rebuild it and
         # so selected_packet can tell notices from packets.
         self._rows.append(renderable)
@@ -188,8 +199,10 @@ class PacketFeed(DataTable):
             style="white" if packet.portnum == "TEXT_MESSAGE_APP" else "grey70",
         )
 
-        width = max(20, self.size.width - 2)
-        line.truncate(width, pad=True)
+        # Fit inside the content region minus the cell padding, or the row
+        # overflows by a few cells and summons a horizontal scrollbar.
+        region = self.scrollable_content_region.width or (self.size.width - 3)
+        line.truncate(max(20, region - 2), pad=True)
 
         self._seq += 1
         self.add_row(line, key=f"p{self._seq}")

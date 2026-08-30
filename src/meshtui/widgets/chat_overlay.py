@@ -55,7 +55,7 @@ class ChatScreen(Screen[None]):
                 yield ListView(id="ov-list")
             with Vertical(id="ov-right"):
                 yield RichLog(id="ov-log", highlight=False, markup=False,
-                              wrap=True, max_lines=2000)
+                              wrap=True, min_width=20, max_lines=2000)
                 yield ChatInput(placeholder="message   esc to leave, pgup/pgdn for "
                                             "history, /help for commands",
                                 id="ov-input")
@@ -193,6 +193,12 @@ class ChatScreen(Screen[None]):
 
     def action_next(self) -> None:
         self.query_one("#ov-list", ListView).action_cursor_down()
+
+    def on_resize(self, event) -> None:
+        # RichLog wraps at write time; a resize needs a rewrite at the new
+        # width or old lines keep their old wrap and bring a scrollbar.
+        self._rendered_sig = None
+        self.render_conversation()
 
     def action_history_up(self) -> None:
         self.query_one("#ov-log", RichLog).scroll_page_up(animate=False)

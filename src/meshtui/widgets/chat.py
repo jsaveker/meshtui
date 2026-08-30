@@ -65,8 +65,10 @@ class ChatPane(Vertical):
 
     def compose(self) -> ComposeResult:
         yield ChatHeader(id="chat-header")
+        # min_width=20: RichLog's default of 78 renders lines 78 cells wide
+        # even in a narrower pane, which summons a horizontal scrollbar.
         yield RichLog(id="chat-log", highlight=False, markup=False,
-                      wrap=True, max_lines=1000)
+                      wrap=True, min_width=20, max_lines=1000)
 
     def set_title(self, text: str) -> None:
         self.base_title = text
@@ -126,6 +128,12 @@ class ChatPane(Vertical):
         # The monitor shows every channel, so every message belongs here.
         self.rerender(state)
         return True
+
+    def on_resize(self) -> None:
+        # RichLog wraps at write time, so lines written in a wider pane stay
+        # wide after a shrink; re-wrap them at the new width.
+        if self._state is not None:
+            self.rerender(self._state)
 
     def _update_header(self, state: MeshState) -> None:
         unread = sum(state.unread.values())
