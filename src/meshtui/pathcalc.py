@@ -171,10 +171,12 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
             candidates = state.resolve_relay(int(byte, 16))
         except ValueError:
             candidates = []
-        # Prefer a positioned candidate: an unpositioned match adds nothing to
-        # the route and repeaters advertise their location as a rule.
-        positioned = [n for n in candidates if n.has_position]
-        pick = (positioned or candidates)[0] if candidates else None
+        # Many nodes share any single byte; rank by what physics allows -
+        # repeaters rebroadcast, others don't - then prefer positioned (they
+        # advertise locations as a rule) and recently heard.
+        pick = min(candidates, key=lambda n: (
+            (n.role or "").upper() not in ("REP", "ROOM"),
+            not n.has_position, -(n.last_heard or 0.0))) if candidates else None
         hops.append(Hop(byte=byte, node=pick, ambiguous=len(candidates) > 1))
     analysis = PathAnalysis(origin=origin, me=me, hops=hops)
 

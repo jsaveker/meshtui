@@ -284,11 +284,26 @@ class MeshService:
 
     def _repeater_label(self, byte: str) -> str:
         """A path byte is the first byte of a repeater's public key, and a
-        node id is '!' + the key's first four bytes - so match on that byte."""
-        for node in self.state.nodes.values():
-            if node.node_id[1:3].lower() == byte.lower():
-                return node.name
-        return f"0x{byte}"
+        node id is '!' + the key's first four bytes - so match on that byte.
+
+        Hundreds of nodes share any single byte, so first-match attribution
+        regularly credited a rebroadcast to some contact three states away.
+        Rank the candidates by what physics allows - only repeaters and room
+        servers rebroadcast, and a recently-heard one beats a long-silent one
+        - and when more than one repeater shares the byte, say so with a '?'
+        rather than pretending certainty."""
+        wanted = byte.lower()
+        candidates = [n for n in self.state.nodes.values()
+                      if n.node_id[1:3].lower() == wanted]
+        if not candidates:
+            return f"0x{byte}"
+        def plausible(n) -> bool:
+            return (n.role or "").upper() in ("REP", "ROOM")
+        best = min(candidates, key=lambda n: (not plausible(n),
+                                              -(n.last_heard or 0.0)))
+        rebroadcasters = sum(1 for n in candidates if plausible(n))
+        certain = rebroadcasters == 1 and plausible(best)
+        return best.name if certain or len(candidates) == 1 else f"{best.name}?"
 
     def receive_node(self, raw: dict[str, Any]):
         try:
