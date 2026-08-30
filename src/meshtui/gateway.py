@@ -128,6 +128,7 @@ class Gateway:
                  bot_router: BotRouter | None = None,
                  path_bot: PathBot | None = None,
                  test_bot: TestBot | None = None,
+                 map_uploader: Any | None = None,
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
@@ -144,10 +145,11 @@ class Gateway:
         self._subs_lock = threading.Lock()
         self.path_bot = path_bot
         self.test_bot = test_bot
+        self.map_uploader = map_uploader
         self.service.attach_link(link)
         self.service.add_listener(self._log_event)
         self.service.add_listener(self._broadcast)
-        for bot in (bot_router, path_bot, test_bot):
+        for bot in (bot_router, path_bot, test_bot, map_uploader):
             if bot is not None:
                 self.service.add_listener(bot.handle_event)
 
@@ -348,6 +350,9 @@ class Gateway:
         if self.test_bot is not None:
             self.service.remove_listener(self.test_bot.handle_event)
             self.test_bot.close()
+        if self.map_uploader is not None:
+            self.service.remove_listener(self.map_uploader.handle_event)
+            self.map_uploader.close()
         if self._owns_socket:
             try:
                 if self.socket_path.exists():
@@ -649,6 +654,7 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   socket_path: Path | str | None = None, bot_channel: str | int | None = None,
                   pathbot_channel: str | int | None = None,
                   testbot_channel: str | int | None = None,
+                  map_upload: bool = False,
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
     link, selected = choose_gateway_link(
@@ -662,4 +668,11 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         router = BotRouter(service, provider, channel=bot_channel)
     path_bot = PathBot(service, channel=pathbot_channel) if pathbot_channel is not None else None
     test_bot = TestBot(service, channel=testbot_channel) if testbot_channel is not None else None
-    return Gateway(service, link, socket_path, router, path_bot, test_bot)
+    map_uploader = None
+    if map_upload:
+        from .mapupload import MapUploader
+        # The uploader signs with the radio's identity, which the link only
+        # fetches when asked to.
+        link.export_identity = True
+        map_uploader = MapUploader(service, link)
+    return Gateway(service, link, socket_path, router, path_bot, test_bot, map_uploader)

@@ -234,6 +234,12 @@ class MeshCoreLink(RadioLink):
         # is wedged (EPIPE while the device node still exists). The gateway's
         # reconnect loop reads this to decide whether a USB reset would help.
         self.usb_wedged = False
+        # Node identity, for features that sign uploads (the map uploader).
+        # The private key is fetched only when export_identity is set, and
+        # only works on firmware built with ENABLE_PRIVATE_KEY_EXPORT.
+        self.export_identity = False
+        self.public_key = ""
+        self.identity_key = ""
         self.contacts: dict[str, dict[str, Any]] = {}
         self.channels: list[tuple[int, str]] = []
         self.channel_secrets: dict[int, Any] = {}
@@ -701,6 +707,25 @@ class MeshCoreLink(RadioLink):
 
     # ----------------------------------------------------------- connection
 
+    async def _fetch_identity_key(self) -> None:
+        """The radio's expanded private key, for signing map uploads."""
+        try:
+            result = await asyncio.wait_for(
+                self.mc.commands.export_private_key(), timeout=10)
+        except Exception:  # noqa: BLE001
+            log.debug("private key export failed", exc_info=True)
+            return
+        payload = self._payload(result)
+        key = payload.get("private_key")
+        if isinstance(key, (bytes, bytearray)):
+            key = key.hex()
+        key = str(key or "").strip().lower()
+        if len(key) == 128 and all(c in "0123456789abcdef" for c in key):
+            self.identity_key = key
+        else:
+            self.emit("status", "map uploads unavailable: this firmware does "
+                                "not allow private-key export")
+
     async def _read_battery(self) -> None:
         """The radio's own battery: MeshCore's get_bat reports millivolts."""
         if not self.my_node_id.startswith("!"):
@@ -737,6 +762,9 @@ class MeshCoreLink(RadioLink):
     async def _announce(self) -> None:
         info = dict(self.mc.self_info or {})
         self.my_node_id = key_to_id(info.get("public_key"))
+        self.public_key = str(info.get("public_key") or "").lower()
+        if self.export_identity and not self.identity_key:
+            await self._fetch_identity_key()
         try:
             query = self._payload(await self.mc.commands.send_device_query())
             info.update(query)
