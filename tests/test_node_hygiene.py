@@ -21,7 +21,11 @@ def check(n, got, want):
 state = MeshState()
 
 node = state.upsert_node({"user": {"id": "!aabbccdd"}, "lastHeard": time.time() + 5 * 86400})
-check("future lastHeard is clamped to now", node.last_heard <= time.time(), True)
+check("a wildly future lastHeard is unknown, not fresh", node.last_heard, None)
+
+node = state.upsert_node({"user": {"id": "!aabbccdd"}, "lastHeard": time.time() + 60})
+check("small future skew is clamped to now",
+      node.last_heard is not None and node.last_heard <= time.time(), True)
 
 past = time.time() - 3600
 node = state.upsert_node({"user": {"id": "!aabbccdd"}, "lastHeard": past})

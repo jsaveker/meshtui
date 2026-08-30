@@ -252,11 +252,15 @@ class MeshState:
                 setattr(node, dst, raw[src])
         if raw.get("lastHeard") is not None:
             # MeshCore adverts stamp last_advert with clocks we don't control,
-            # and some are wrong by days (or decades). A future last-heard
-            # renders a negative age and floats the node above every genuinely
-            # recent one; whatever the sender claims, we heard it no later
-            # than now.
-            node.last_heard = min(float(raw["lastHeard"]), time.time())
+            # and some are wrong by days (or decades). Small future skew means
+            # "heard just now"; a wildly future value is a garbage clock, and
+            # clamping it to now would crown a stale node the freshest - it
+            # once made a repeater two counties over outrank the one on the
+            # roof. Admit ignorance instead.
+            heard = float(raw["lastHeard"])
+            now = time.time()
+            if heard <= now + 300:
+                node.last_heard = min(heard, now)
         if raw.get("viaMqtt"):
             node.via_mqtt = True
 
