@@ -221,7 +221,13 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
             analysis.route_km = sum(legs)
     if (origin is not None and origin.has_position
             and me is not None and me.has_position):
-        analysis.direct_km = haversine_km(origin.lat, origin.lon, me.lat, me.lon)
+        direct = haversine_km(origin.lat, origin.lon, me.lat, me.lon)
+        # Physics bound: a packet that arrived in N hops traveled at most N
+        # maximum-length legs. A longer straight line means the origin's
+        # advertised position is wrong (a stale fix, a default coordinate),
+        # and an honest omission beats an ocean-crossing 'direct' figure.
+        if direct <= max(1, obs.hops) * MAX_LEG_KM:
+            analysis.direct_km = direct
     return analysis
 
 

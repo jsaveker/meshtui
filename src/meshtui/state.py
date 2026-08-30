@@ -276,16 +276,22 @@ class MeshState:
                 setattr(node, dst, metrics[src])
 
         pos = raw.get("position") or {}
-        if pos.get("latitude") is not None:
-            node.lat = pos["latitude"]
-        elif pos.get("latitudeI") is not None:
-            node.lat = pos["latitudeI"] * 1e-7
-        if pos.get("longitude") is not None:
-            node.lon = pos["longitude"]
-        elif pos.get("longitudeI") is not None:
-            node.lon = pos["longitudeI"] * 1e-7
-        if pos.get("altitude") is not None:
-            node.alt = pos["altitude"]
+        lat = pos.get("latitude")
+        if lat is None and pos.get("latitudeI") is not None:
+            lat = pos["latitudeI"] * 1e-7
+        lon = pos.get("longitude")
+        if lon is None and pos.get("longitudeI") is not None:
+            lon = pos["longitudeI"] * 1e-7
+        # (0,0) is the universal "GPS never got a fix" sentinel - Null Island
+        # has no repeaters, but a node advertising it once made a 7-hop LoRa
+        # packet look like it crossed an ocean. Out-of-range values are
+        # corrupt adverts. Positions only mean anything in pairs.
+        if (lat is not None and lon is not None and (lat or lon)
+                and abs(lat) <= 90 and abs(lon) <= 180):
+            node.lat = lat
+            node.lon = lon
+            if pos.get("altitude") is not None:
+                node.alt = pos["altitude"]
 
         if self.my_node_id and node_id == self.my_node_id:
             node.is_self = True

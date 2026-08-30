@@ -39,6 +39,21 @@ except ValueError:
 check("placeholder sender id is rejected", rejected, True)
 check("no phantom node was created", "!00000000" in state.nodes, False)
 
+# positions: (0,0) is a GPS-unset sentinel, out-of-range pairs are corrupt
+node = state.upsert_node({"user": {"id": "!aabbccdd"},
+                          "position": {"latitude": 0.0, "longitude": 0.0}})
+check("Null Island is not a position", (node.lat, node.lon), (None, None))
+node = state.upsert_node({"user": {"id": "!aabbccdd"},
+                          "position": {"latitude": -97.9, "longitude": 30.3}})
+check("swapped/corrupt coordinates are rejected", node.lat, None)
+node = state.upsert_node({"user": {"id": "!aabbccdd"},
+                          "position": {"latitude": 30.34, "longitude": -97.92}})
+check("a real position is stored", (node.lat, node.lon), (30.34, -97.92))
+node = state.upsert_node({"user": {"id": "!aabbccdd"},
+                          "position": {"latitude": 0.0, "longitude": 0.0}})
+check("a later sentinel does not erase a real position",
+      (node.lat, node.lon), (30.34, -97.92))
+
 service = MeshService(store=None)
 packet = Packet(ts=time.time(), from_id="!00000000", to_id="^all",
                 portnum="RXLOG_APP", summary="rx 12B", raw={"from": 0})

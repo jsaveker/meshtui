@@ -120,6 +120,12 @@ absurd = analyze(state, PathObservation(ts=NOW, kind="advert", origin_id="!ababa
                                         path="99", hops=1))
 check("an impossible leg yields no route instead of a continental one",
       absurd.route_km, None)
+check("a plausible origin keeps its direct figure",
+      absurd.direct_km is not None and absurd.direct_km < 100, True)
+overseas = analyze(state, PathObservation(ts=NOW, kind="advert",
+                                          origin_id="!99000001", path="4c", hops=1))
+check("an origin claiming to be an ocean away yields no direct figure",
+      overseas.direct_km, None)
 
 reply = bot_reply(state, merged, "UsefulTowel")
 check("reply speaks the pathbot dialect",
