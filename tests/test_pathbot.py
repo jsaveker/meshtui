@@ -65,6 +65,21 @@ check("same packet's two sightings fold into one record",
 check("the merge keeps the richer fields",
       (merged.origin_name, merged.channel, merged.snr), ("UsefulTowel", 2, 4.5))
 
+# The RF log reports at heard-time; the decoded message follows on the next
+# poll seconds later. Complementary sightings across that gap must still fold.
+late = PathObservation(ts=NOW + 2.4, kind="channel", path="", hops=2,
+                       origin_name="LateNews", channel=2)
+rf_first = PathObservation(ts=NOW, kind="channel", path="aabb", hops=2, snr=1.0)
+state2 = MeshState()
+state2.note_path(rf_first)
+merged2, is_new2 = state2.note_path(late)
+check("a decoded message folds into its seconds-earlier RF sighting",
+      (is_new2, merged2.origin_name, merged2.path), (False, "LateNews", "aabb"))
+distinct = PathObservation(ts=NOW + 2.0, kind="channel", path="ccdd", hops=2,
+                           origin_name="Other")
+_, distinct_new = state2.note_path(distinct)
+check("a different packet in the window stays separate", distinct_new, True)
+
 # ------------------------------------------------------------ analysis/reply
 state.upsert_node({"user": {"id": "!abababab", "longName": "UsefulTowel"},
                    "position": {"latitude": 30.00, "longitude": -97.90}})

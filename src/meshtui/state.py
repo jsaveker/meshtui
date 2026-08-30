@@ -166,12 +166,13 @@ class MeshState:
     def note_path(self, obs: Any) -> tuple[Any, bool]:
         """Fold one PathObservation in. Returns (record, is_new).
 
-        A duplicate key enriches the existing record instead of appending:
+        A duplicate enriches the existing record instead of appending:
         whichever sighting arrives second usually knows something the first
-        did not (the decoded message adds the sender's name and channel)."""
-        existing = self._path_obs.get(obs.key)
+        did not (the decoded message adds the sender's name and channel, the
+        RF-log entry adds the path bytes)."""
+        existing = self._path_obs.get(obs.key) or self._sibling(obs)
         if existing is not None:
-            for name in ("origin_id", "origin_name"):
+            for name in ("origin_id", "origin_name", "path"):
                 if getattr(obs, name) and not getattr(existing, name):
                     setattr(existing, name, getattr(obs, name))
             for name in ("snr", "rssi", "channel"):
@@ -182,6 +183,32 @@ class MeshState:
         while len(self._path_obs) > self.PATH_BUFFER:
             self._path_obs.popitem(last=False)
         return obs, True
+
+    def _sibling(self, obs: Any) -> Any | None:
+        """The same packet seen through the other lens, if it already landed.
+
+        The RF log reports a packet the moment it is heard; its decoded
+        message follows on the next poll, seconds later - so the exact-key
+        match misses live pairs. A sibling is a recent record of the same
+        kind and hop count whose fields COMPLEMENT ours (one knows the
+        sender, the other knows the path); requiring complementarity keeps
+        two genuinely distinct messages from folding together."""
+        candidates = list(self._path_obs.values())[-12:]
+        for record in reversed(candidates):
+            if record.kind != obs.kind or record.hops != obs.hops:
+                continue
+            if abs(record.ts - obs.ts) > 4.0:
+                continue
+            if record.path and obs.path and record.path != obs.path:
+                continue
+            if (record.origin_name and obs.origin_name
+                    and record.origin_name != obs.origin_name):
+                continue
+            complementary = (bool(record.origin_name) != bool(obs.origin_name)
+                             or bool(record.path) != bool(obs.path))
+            if complementary:
+                return record
+        return None
 
     @property
     def paths(self) -> list[Any]:
