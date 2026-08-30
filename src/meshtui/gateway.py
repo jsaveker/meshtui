@@ -654,6 +654,7 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   socket_path: Path | str | None = None, bot_channel: str | int | None = None,
                   pathbot_channel: str | int | None = None,
                   testbot_channel: str | int | None = None,
+                  testbot_location: str = "",
                   map_upload: bool = False,
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
@@ -667,7 +668,8 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
             provider.endpoint = ai_endpoint
         router = BotRouter(service, provider, channel=bot_channel)
     path_bot = PathBot(service, channel=pathbot_channel) if pathbot_channel is not None else None
-    test_bot = TestBot(service, channel=testbot_channel) if testbot_channel is not None else None
+    test_bot = (TestBot(service, channel=testbot_channel, location=testbot_location)
+                if testbot_channel is not None else None)
     map_uploader = None
     if map_upload:
         from .mapupload import MapUploader

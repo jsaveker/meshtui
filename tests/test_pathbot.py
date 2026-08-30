@@ -273,6 +273,15 @@ tester.route(channel_msg("BCW_A: Test", channel=10))
 check("a direct test reports direct with its SNR",
       sent[-1][0], "@[BCW_A] direct to Tachyon Home (+9.2dB)")
 
+located = TestBot(service, channel="#testing", location="Steiner Ranch")
+located.WAIT_STEPS = 1
+located.WAIT_STEP_SECONDS = 0.0
+heard("Wanderer", 3)
+located.route(channel_msg("Wanderer: radio check", channel=10))
+check("a configured place name rides in the receipt",
+      sent[-1][0], "@[Wanderer] 3 hops to Tachyon Home (Steiner Ranch)")
+located.close()
+
 before_len = len(sent)
 tester.route(channel_msg("Digitaino: thanks!", channel=10))
 check("chatter gets no robot reply", len(sent), before_len)

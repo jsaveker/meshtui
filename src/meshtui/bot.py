@@ -366,11 +366,15 @@ class TestBot(PathBot):
     TRIGGER_WORDS = ("test", "ping", "radio check")
 
     def __init__(self, service: MeshService, *, channel: str | int = "#testing",
+                 location: str = "",
                  cooldown_seconds: float = 120.0,
                  max_requests_per_hour: int = 30) -> None:
         super().__init__(service, channel=channel,
                          cooldown_seconds=cooldown_seconds,
                          max_requests_per_hour=max_requests_per_hour)
+        # A node name says who answered; a place name says where the signal
+        # reached - "Tachyon Home (Steiner Ranch)" tells the tester both.
+        self.location = location.strip()
 
     def _eligible(self, message: ChatMessage) -> bool:
         if message.outgoing or message.is_dm:
@@ -405,6 +409,8 @@ class TestBot(PathBot):
             return []
         state = self.service.state
         station = state.my_node_name or "this station"
+        if self.location:
+            station = f"{station} ({self.location})"
         if obs.hops <= 0:
             reply = f"@[{requester}] direct to {station}"
             if obs.snr is not None:

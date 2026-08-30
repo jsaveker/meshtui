@@ -33,6 +33,10 @@ def _gateway_parser() -> argparse.ArgumentParser:
     parser.add_argument("--testbot", metavar="NAME_OR_SLOT",
                         help="acknowledge test messages on this channel with the "
                              "hop count they arrived over, e.g. '#testing'")
+    parser.add_argument("--testbot-location", metavar="PLACE", default="",
+                        help="place name appended to testbot receipts, e.g. "
+                             "'Steiner Ranch' -> '3 hops to Tachyon Home "
+                             "(Steiner Ranch)'")
     parser.add_argument("--map-upload", action="store_true",
                         help="upload heard repeater/room-server adverts to "
                              "map.meshcore.io (needs firmware with private-key "
@@ -73,6 +77,7 @@ def run_gateway(argv: list[str]) -> int:
         bot_channel=_channel_arg(args.bot_channel),
         pathbot_channel=_channel_arg(args.pathbot),
         testbot_channel=_channel_arg(args.testbot),
+        testbot_location=args.testbot_location,
         map_upload=args.map_upload,
         ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
     )
