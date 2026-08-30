@@ -31,7 +31,10 @@ ROLE_STYLES = {"origin": "bright_green", "hop": "yellow", "me": "bright_cyan"}
 
 
 def _mi(km: float | None) -> str:
-    return f"{km * KM_TO_MI:.1f}" if km is not None else "-"
+    if km is None:
+        return "-"
+    miles = km * KM_TO_MI
+    return f"{miles:.0f}" if miles >= 100 else f"{miles:.1f}"
 
 
 class PathScreen(Screen[None]):
@@ -62,7 +65,7 @@ class PathScreen(Screen[None]):
         table.border_title = "observed paths"
         table.add_column("age", key="age", width=4)
         table.add_column("kind", key="kind", width=7)
-        table.add_column("origin", key="origin", width=16)
+        table.add_column("origin", key="origin", width=20)
         table.add_column("hops", key="hops", width=4)
         table.add_column("snr", key="snr", width=6)
         table.add_column("route", key="route", width=6)
@@ -93,7 +96,7 @@ class PathScreen(Screen[None]):
             table.add_row(
                 fmt_age(now - obs.ts),
                 Text(obs.kind, style="cyan" if obs.kind == "advert" else "bright_white"),
-                Text(origin[:16], style="grey70"),
+                Text(origin[:20], style="grey70"),
                 Text(str(obs.hops), style="bright_white"),
                 Text(f"{obs.snr:+.1f}" if obs.snr is not None else "-",
                      style=snr_style(obs.snr)),
@@ -115,6 +118,10 @@ class PathScreen(Screen[None]):
         self.dismiss()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._render_selected()
+
+    def on_resize(self, event) -> None:
+        # The canvas draws at whatever size its box has; redraw when it changes.
         self._render_selected()
 
     # ------------------------------------------------------------ summary
@@ -168,8 +175,9 @@ class PathScreen(Screen[None]):
 
     def _draw(self, analysis: PathAnalysis) -> Text:
         points = analysis.points()
-        cols = max(30, (self.query_one("#paths-canvas", Static).size.width or 60) - 4)
-        rows = 16
+        box = self.query_one("#paths-canvas", Static).size
+        cols = max(30, (box.width or 60) - 4)
+        rows = max(8, (box.height or 18) - 1)
         if len(points) < 2:
             return Text("not enough positioned nodes on this path to draw it",
                         style="grey42")

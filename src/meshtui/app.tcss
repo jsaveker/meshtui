@@ -191,25 +191,31 @@ PathScreen { background: $surface; }
 #paths-main { height: 1fr; }
 
 #paths-table {
-    width: 62;
+    width: 78;
+    height: 100%;
     border: round $primary 40%;
     scrollbar-size-vertical: 1;
 }
 
 #paths-side {
     width: 1fr;
+    height: 100%;
     padding: 0 1;
 }
 
 #paths-canvas {
-    height: 18;
+    height: 1fr;
+    min-height: 10;
     border: round $primary 40%;
     padding: 0 1;
 }
 
 #paths-detail {
-    height: 1fr;
+    height: auto;
+    max-height: 45%;
     padding: 1 1;
+    overflow-y: auto;
+    scrollbar-size-vertical: 1;
 }
 
 #relay-status, #sensor-status {
