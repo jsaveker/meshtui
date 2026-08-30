@@ -157,10 +157,10 @@ class PacketFeed(DataTable):
 
     def _readd_notice(self, renderable: Text) -> None:
         self._seq += 1
-        region = self.scrollable_content_region.width or (self.size.width - 3)
         shown = renderable.copy()
-        shown.truncate(max(20, region - 2))
-        self.add_row(shown, key=f"n{self._seq}")
+        shown.no_wrap = False
+        shown, height = self._fit(shown)
+        self.add_row(shown, key=f"n{self._seq}", height=height)
         # Store the renderable itself, not None, so a resize can rebuild it and
         # so selected_packet can tell notices from packets.
         self._rows.append(renderable)
@@ -169,7 +169,7 @@ class PacketFeed(DataTable):
         if packet is None:  # notice rows are re-added elsewhere
             return
         label, colour = port_label(packet.portnum)
-        line = Text(no_wrap=True, overflow="ellipsis")
+        line = Text()
         line.append(time.strftime("%H:%M:%S", time.localtime(packet.ts)), style="grey42")
         line.append(" ")
         line.append(f"{label:<6}", style=f"bold {colour}")
@@ -199,14 +199,29 @@ class PacketFeed(DataTable):
             style="white" if packet.portnum == "TEXT_MESSAGE_APP" else "grey70",
         )
 
-        # Fit inside the content region minus the cell padding, or the row
-        # overflows by a few cells and summons a horizontal scrollbar.
-        region = self.scrollable_content_region.width or (self.size.width - 3)
-        line.truncate(max(20, region - 2), pad=True)
-
+        fitted, height = self._fit(line)
         self._seq += 1
-        self.add_row(line, key=f"p{self._seq}")
+        self.add_row(fitted, key=f"p{self._seq}", height=height)
         self._rows.append(packet)
+
+    def _fit(self, line: Text) -> tuple[Text, int]:
+        """Wrap a feed line to the pane width instead of scrolling or cutting.
+
+        Sized to the content region minus the cell padding, or the row
+        overflows by a few cells and summons a horizontal scrollbar."""
+        region = self.scrollable_content_region.width or (self.size.width - 3)
+        width = max(20, region - 2)
+        if line.cell_len <= width:
+            line.truncate(width, pad=True)
+            return line, 1
+        wrapped = line.wrap(self.app.console, width)
+        out = Text()
+        for index, segment in enumerate(wrapped):
+            if index:
+                out.append("\n")
+            segment.truncate(width, pad=True)
+            out.append_text(segment)
+        return out, max(1, len(wrapped))
 
         while len(self._rows) > MAX_ROWS:
             try:
