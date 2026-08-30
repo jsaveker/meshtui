@@ -20,7 +20,8 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 
 from ..geo import km_offsets
-from ..pathcalc import KM_TO_MI, PathAnalysis, PathObservation, analyze
+from ..pathcalc import (KM_TO_MI, PathAnalysis, PathObservation, analyze,
+                        geojson_url, route_geojson)
 from ..state import MeshState
 from .canvas import BrailleCanvas
 from .mesh_map import snr_style
@@ -233,4 +234,11 @@ class PathScreen(Screen[None]):
         if analysis.stretch:
             out.append(f"   x{analysis.stretch:.1f} the straight line",
                        style="red" if analysis.stretch > 2 else "grey70")
+        geojson = route_geojson(analysis)
+        if geojson is not None:
+            # An OSC-8 hyperlink: the route data travels inside the URL
+            # fragment, so clicking it involves no server of ours.
+            out.append("\n\n")
+            out.append(" open route in geojson.io",
+                       style=f"bright_blue underline link {geojson_url(geojson)}")
         return out

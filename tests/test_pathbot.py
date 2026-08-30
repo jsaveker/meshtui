@@ -130,6 +130,25 @@ check("zero hops answers 'direct'",
 check("missing observation is answered honestly",
       bot_reply(state, None, "A"), "@[A] heard you, but no path data for that message")
 
+# -------------------------------------------------------------- map links
+from meshtui.pathcalc import geojson_url, route_geojson
+
+map_analysis = analyze(state, merged)
+geo = route_geojson(map_analysis)
+kinds = [f["geometry"]["type"] for f in geo["features"]]
+check("geojson has one line plus a point per positioned node",
+      (kinds[0], kinds.count("Point")), ("LineString", len(map_analysis.points())))
+line = geo["features"][0]["geometry"]["coordinates"]
+check("coordinates are lon,lat in travel order",
+      (line[0], line[-1]), ([-97.9, 30.0], [-97.92, 30.34]))
+url = geojson_url(geo)
+check("map url targets geojson.io's data fragment",
+      url.startswith("https://geojson.io/#data=data:application/json,")
+      and " " not in url, True)
+check("no route means no map",
+      route_geojson(analyze(state, PathObservation(ts=NOW, kind="channel", hops=0))),
+      None)
+
 # ---------------------------------------------------------------- the bot
 tmp = tempfile.mkdtemp(prefix="meshtui-pathbot-")
 store = Store(os.path.join(tmp, "mesh.db"), flush_interval=0.1)
@@ -144,6 +163,7 @@ service.send_message = lambda text, dest, **kw: sent.append((text, dest)) or typ
 bot = PathBot(service, channel="#bot")
 bot.WAIT_STEPS = 1
 bot.WAIT_STEP_SECONDS = 0.0
+bot._map_link = lambda analysis: "https://da.gd/test1"
 
 def channel_msg(text, ts=None, channel=2):
     from meshtui.model import ChatMessage
@@ -161,6 +181,29 @@ bot.route(channel_msg("UsefulTowel: !path"))
 check("one reply per request", len(sent), 1)
 check("reply is addressed and routed",
       sent[0][0].startswith("@[UsefulTowel] [1h] 4c") and sent[0][1].index == 2, True)
+check("the map link rides along when it fits",
+      sent[0][0].endswith(", https://da.gd/test1"), True)
+
+# the real shortener call, with the network mocked out
+import io, urllib.request
+real_urlopen = urllib.request.urlopen
+captured = {}
+class FakeResponse(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def fake_urlopen(request, timeout=None):
+    captured["url"] = request.full_url
+    return FakeResponse(b"https://da.gd/xyz9\n")
+urllib.request.urlopen = fake_urlopen
+try:
+    bot2 = PathBot(service, channel="#bot")
+    link = bot2._map_link(analyze(state, merged))
+    bot2.close()
+finally:
+    urllib.request.urlopen = real_urlopen
+check("shortener reply becomes the link", link, "https://da.gd/xyz9")
+check("the shortener is asked for a geojson.io url",
+      "geojson.io" in urllib.parse.unquote(captured["url"]), True)
 
 bot.route(channel_msg("UsefulTowel: !path"))
 check("cooldown blocks an immediate repeat", len(sent), 1)

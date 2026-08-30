@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .model import BROADCAST, ChannelRef, ChatMessage, PeerRef, payload_bytes
-from .pathcalc import bot_reply, split_sender
+from .pathcalc import analyze, bot_reply, geojson_url, route_geojson, split_sender
 from .radio import protocol_payload_limit
 from .service import MeshService
 
@@ -306,9 +307,37 @@ class PathBot(BotRouter):
         destination = ChannelRef(state.protocol, message.channel,
                                  state.channel_name(message.channel))
         limit = protocol_payload_limit(destination.protocol)
+        if obs is not None and obs.path:
+            link = self._map_link(analyze(state, obs))
+            if link and payload_bytes(f"{reply}, {link}") <= limit:
+                reply = f"{reply}, {link}"
         text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
         log.info("pathbot: %s", text)
         return [self.service.send_message(text, destination)]
+
+    SHORTENER = "https://da.gd/shorten?url="
+
+    def _map_link(self, analysis) -> str | None:
+        """A geojson.io view of the route, shortened to fit a LoRa packet.
+
+        The route data rides inside the geojson.io URL fragment itself; the
+        only thing sent anywhere is that URL, to the shortener - and every
+        position in it is one the nodes already broadcast in their adverts."""
+        geojson = route_geojson(analysis)
+        if geojson is None:
+            return None
+        try:
+            request = urllib.request.Request(
+                self.SHORTENER + urllib.parse.quote(geojson_url(geojson), safe=""),
+                headers={"User-Agent": "meshtui-pathbot"})
+            with urllib.request.urlopen(request, timeout=6) as resp:
+                short = resp.read(300).decode("utf-8", "ignore").strip()
+        except Exception:  # noqa: BLE001 - the reply is fine without a map
+            log.debug("URL shortener unavailable", exc_info=True)
+            return None
+        if short.startswith("https://") and " " not in short and len(short) <= 40:
+            return short
+        return None
 
     def _find_observation(self, requester: str):
         """The freshest path observation for this sender's channel message."""
