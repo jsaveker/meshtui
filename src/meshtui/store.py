@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .model import ChatMessage, Node, Packet
+from .pathcalc import PathObservation
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +113,21 @@ CREATE TABLE IF NOT EXISTS relay_edges (
     packets     INTEGER DEFAULT 0,
     PRIMARY KEY (origin, relay_byte)
 );
+
+CREATE TABLE IF NOT EXISTS path_obs (
+    rowid_      INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_node  TEXT,
+    ts          REAL NOT NULL,
+    kind        TEXT,
+    origin_id   TEXT,
+    origin_name TEXT,
+    path        TEXT,
+    hops        INTEGER,
+    snr         REAL,
+    rssi        INTEGER,
+    channel     INTEGER
+);
+CREATE INDEX IF NOT EXISTS path_obs_ts ON path_obs(ts);
 
 CREATE TABLE IF NOT EXISTS foreign_channels (
     hash        INTEGER PRIMARY KEY,
@@ -419,6 +435,29 @@ class Store:
             (p.ts, p.from_id, p.to_id, p.portnum, p.channel, p.snr, p.rssi, p.hops,
              p.packet_id, p.summary, raw, self.local_node),
         )
+
+    def add_path(self, o: "PathObservation") -> None:
+        self._put(
+            "INSERT INTO path_obs (local_node, ts, kind, origin_id, origin_name,"
+            " path, hops, snr, rssi, channel) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (self.local_node, o.ts, o.kind, o.origin_id, o.origin_name,
+             o.path, o.hops, o.snr, o.rssi, o.channel),
+        )
+
+    def recent_paths(self, limit: int = 2000) -> "list[PathObservation]":
+        rows = self._read(
+            "SELECT * FROM (SELECT * FROM path_obs WHERE local_node IS ?"
+            " ORDER BY rowid_ DESC LIMIT ?) ORDER BY rowid_ ASC",
+            (self.local_node, limit),
+        )
+        return [
+            PathObservation(
+                ts=r["ts"], kind=r["kind"] or "", origin_id=r["origin_id"] or "",
+                origin_name=r["origin_name"] or "", path=r["path"] or "",
+                hops=r["hops"] or 0, snr=r["snr"], rssi=r["rssi"], channel=r["channel"],
+            )
+            for r in rows
+        ]
 
     def add_message(self, m: ChatMessage) -> None:
         self._put(

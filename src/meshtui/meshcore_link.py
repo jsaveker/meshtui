@@ -344,6 +344,13 @@ class MeshCoreLink(RadioLink):
         await self._announce()
         self.emit("status", "loading channels...")
         await self._load_channels()
+        try:
+            # Lets the library match RF-log packets to the channel messages
+            # they carry, which injects each message's path/SNR/RSSI - the
+            # data behind path observations and the !path bot.
+            self.mc.decrypt_channels = True
+        except Exception:  # noqa: BLE001 - older library builds lack the flag
+            log.debug("decrypt_channels unavailable", exc_info=True)
         await self._load_contacts()
         await self._check_autoadd()
 

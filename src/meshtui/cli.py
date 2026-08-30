@@ -27,6 +27,9 @@ def _gateway_parser() -> argparse.ArgumentParser:
     parser.add_argument("--socket", help="local Unix socket path")
     parser.add_argument("--bot-channel", metavar="NAME_OR_SLOT",
                         help="enable @ai routing on this channel, e.g. '#bots' or 5")
+    parser.add_argument("--pathbot", metavar="NAME_OR_SLOT",
+                        help="answer !path on this channel with the route the "
+                             "request traveled, e.g. '#bot' or 2")
     parser.add_argument("--ai-model", default="gpt-5-mini")
     parser.add_argument("--ai-endpoint", help="Responses-compatible API endpoint")
     parser.add_argument("--debug", action="store_true")
@@ -52,12 +55,16 @@ def run_gateway(argv: list[str]) -> int:
     if not store.open():
         print(store.error or "could not open gateway database", file=sys.stderr)
         return 1
-    channel: str | int | None = args.bot_channel
-    if isinstance(channel, str) and channel.isdigit():
-        channel = int(channel)
+    def _channel_arg(value: str | None) -> str | int | None:
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return value
+
     gateway = build_gateway(
         store=store, port=args.port, host=args.host, protocol=args.protocol,
-        demo=args.demo, socket_path=args.socket, bot_channel=channel,
+        demo=args.demo, socket_path=args.socket,
+        bot_channel=_channel_arg(args.bot_channel),
+        pathbot_channel=_channel_arg(args.pathbot),
         ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
     )
     try:

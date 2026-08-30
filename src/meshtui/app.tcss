@@ -179,6 +179,39 @@ RelayScreen, SensorScreen {
     background: $surface;
 }
 
+PathScreen { background: $surface; }
+
+#paths-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#paths-main { height: 1fr; }
+
+#paths-table {
+    width: 62;
+    border: round $primary 40%;
+    scrollbar-size-vertical: 1;
+}
+
+#paths-side {
+    width: 1fr;
+    padding: 0 1;
+}
+
+#paths-canvas {
+    height: 18;
+    border: round $primary 40%;
+    padding: 0 1;
+}
+
+#paths-detail {
+    height: 1fr;
+    padding: 1 1;
+}
+
 #relay-status, #sensor-status {
     height: 1;
     padding: 0 1;

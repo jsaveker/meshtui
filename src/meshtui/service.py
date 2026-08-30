@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .meshcore_link import contact_to_node
+from .pathcalc import obs_from_packet
 from .model import (
     BROADCAST,
     ChannelRef,
@@ -162,6 +163,8 @@ class MeshService:
             if message.is_dm:
                 other = message.to_id if message.outgoing else message.from_id
                 self.state.dm_contacts.add(other)
+        for obs in self.store.recent_paths():
+            self.state.note_path(obs)
 
     # ------------------------------------------------------------- inbound
 
@@ -319,6 +322,11 @@ class MeshService:
                 and packet.from_id.startswith("!") and packet.from_id != "!00000000"):
             self.receive_node({"id": packet.from_id, "num": packet.raw.get("from")})
         self.state.add_packet(packet)
+        obs = obs_from_packet(packet)
+        if obs is not None:
+            _, is_new = self.state.note_path(obs)
+            if is_new and self.store is not None:
+                self.store.add_path(obs)
         if self.store is not None:
             self.store.add_packet(packet)
         return packet

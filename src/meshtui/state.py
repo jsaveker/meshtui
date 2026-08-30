@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -155,6 +155,38 @@ class MeshState:
         # MeshCore only: repeaters we hold an admin session with.
         self.admin_sessions: set[str] = set()
         self.cli_log: deque[tuple[float, str, str]] = deque(maxlen=500)
+        # Path observations keyed for dedup: the RF-log sighting and the
+        # decoded message of the same packet must fold into one record.
+        self._path_obs: OrderedDict[tuple, Any] = OrderedDict()
+
+    # ---------------------------------------------------------------- paths
+
+    PATH_BUFFER = 2000
+
+    def note_path(self, obs: Any) -> tuple[Any, bool]:
+        """Fold one PathObservation in. Returns (record, is_new).
+
+        A duplicate key enriches the existing record instead of appending:
+        whichever sighting arrives second usually knows something the first
+        did not (the decoded message adds the sender's name and channel)."""
+        existing = self._path_obs.get(obs.key)
+        if existing is not None:
+            for name in ("origin_id", "origin_name"):
+                if getattr(obs, name) and not getattr(existing, name):
+                    setattr(existing, name, getattr(obs, name))
+            for name in ("snr", "rssi", "channel"):
+                if getattr(obs, name) is not None and getattr(existing, name) is None:
+                    setattr(existing, name, getattr(obs, name))
+            return existing, False
+        self._path_obs[obs.key] = obs
+        while len(self._path_obs) > self.PATH_BUFFER:
+            self._path_obs.popitem(last=False)
+        return obs, True
+
+    @property
+    def paths(self) -> list[Any]:
+        """Observations oldest-first (insertion order)."""
+        return list(self._path_obs.values())
 
     # ---------------------------------------------------------------- nodes
 

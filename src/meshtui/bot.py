@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .model import BROADCAST, ChannelRef, ChatMessage, PeerRef, payload_bytes
+from .pathcalc import bot_reply, split_sender
 from .radio import protocol_payload_limit
 from .service import MeshService
 
@@ -245,3 +246,72 @@ class BotRouter:
         limit = protocol_payload_limit(destination.protocol)
         replies = split_mesh_text(answer, limit, self.max_chunks)
         return [self.service.send_message(reply, destination) for reply in replies]
+
+
+PATH_TRIGGERS = ("!path", "path?", "pathbot")
+
+
+class PathBot(BotRouter):
+    """Answer !path on the bot channel with the route the request traveled.
+
+    Deterministic and local: the reply is computed from our own RF log and
+    node table, no provider involved. Good-neighbor rules are inherited from
+    BotRouter (fingerprint dedup, per-sender cooldown, hourly cap) plus two of
+    its own: it never answers another bot's reply, and it sends exactly one
+    packet per request.
+    """
+
+    # The path rides on the packet event that follows the chat event, and the
+    # RF-log correlation may need the next poll cycle; how long to wait for it.
+    WAIT_STEP_SECONDS = 0.5
+    WAIT_STEPS = 8
+
+    def __init__(self, service: MeshService, *, channel: str | int = "#bot",
+                 cooldown_seconds: float = 60.0,
+                 max_requests_per_hour: int = 30) -> None:
+        super().__init__(service, provider=None, channel=channel,  # type: ignore[arg-type]
+                         cooldown_seconds=cooldown_seconds,
+                         max_requests_per_hour=max_requests_per_hour)
+
+    def _eligible(self, message: ChatMessage) -> bool:
+        if message.outgoing or message.is_dm:
+            return False
+        if not self._channel_matches(message.channel):
+            return False
+        _, command = split_sender(message.text)
+        if command.startswith("@["):  # another bot's reply
+            return False
+        return command.strip().casefold() in PATH_TRIGGERS
+
+    def route(self, message: ChatMessage) -> list:
+        if not self._eligible(message) or not self._claim(self._fingerprint(message)):
+            return []
+        requester, _ = split_sender(message.text)
+        if not self._within_rate_limit(requester or message.from_id):
+            return []
+        obs = None
+        for _ in range(self.WAIT_STEPS):
+            obs = self._find_observation(requester)
+            if obs is not None:
+                break
+            time.sleep(self.WAIT_STEP_SECONDS)
+        state = self.service.state
+        reply = bot_reply(state, obs, requester)
+        destination = ChannelRef(state.protocol, message.channel,
+                                 state.channel_name(message.channel))
+        limit = protocol_payload_limit(destination.protocol)
+        text = split_mesh_text(reply, limit, max_chunks=1, prefix="")[0]
+        log.info("pathbot: %s", text)
+        return [self.service.send_message(text, destination)]
+
+    def _find_observation(self, requester: str):
+        """The freshest path observation for this sender's channel message."""
+        cutoff = time.time() - 30.0
+        with self.service.lock:
+            candidates = self.service.state.paths
+        for obs in reversed(candidates):
+            if obs.ts < cutoff:
+                break
+            if obs.kind == "channel" and obs.origin_name == requester:
+                return obs
+        return None

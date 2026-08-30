@@ -1,0 +1,151 @@
+"""The !path bot and the path-observation pipeline behind it.
+
+A path observation must be derived from RF-logged adverts and decoded channel
+messages, folded into one record when both sightings describe the same packet,
+persisted, and answered on the bot channel in the dialect the mesh's other
+pathbots speak - with the good-neighbor rules (one reply per request, cooldown,
+never answering another bot) actually enforced.
+"""
+import os, sys, tempfile, time, types
+
+from meshtui.bot import PathBot
+from meshtui.model import Packet
+from meshtui.pathcalc import PathObservation, analyze, bot_reply, obs_from_packet, split_sender
+from meshtui.service import MeshService
+from meshtui.state import MeshState
+from meshtui.store import Store
+
+failures = []
+def check(n, got, want):
+    print(f"  {'ok  ' if got == want else 'FAIL'} {n}")
+    if got != want: failures.append(n)
+
+NOW = time.time()
+
+# ------------------------------------------------------------- derivation
+adv = Packet(ts=NOW, from_id="!abababab", to_id="^all", portnum="RXLOG_APP",
+             summary="advert (rf)",
+             raw={"payload_typename": "ADVERT", "adv_key": "ab" * 32,
+                  "adv_name": "Hilltop", "path": "1a4c", "snr": -3.0, "rssi": -90})
+obs = obs_from_packet(adv)
+check("advert sighting derives an observation",
+      (obs.kind, obs.origin_id, obs.origin_name, obs.hops, obs.path),
+      ("advert", "!abababab", "Hilltop", 2, "1a4c"))
+
+msg = Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all", channel=2,
+             portnum="TEXT_MESSAGE_APP", summary='"UsefulTowel: !path"',
+             raw={"type": "CHAN", "text": "UsefulTowel: !path", "path": "4c",
+                  "path_len": 1, "SNR": 4.5})
+obs = obs_from_packet(msg)
+check("decoded channel message derives an observation",
+      (obs.kind, obs.origin_name, obs.hops, obs.path, obs.snr, obs.channel),
+      ("channel", "UsefulTowel", 1, "4c", 4.5, 2))
+
+direct = obs_from_packet(Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all",
+                                channel=2, portnum="TEXT_MESSAGE_APP", summary="x",
+                                raw={"type": "CHAN", "text": "A: !path", "path_len": 0}))
+check("zero-hop message derives a direct observation", direct.hops, 0)
+check("meshtastic-shaped packets derive nothing",
+      obs_from_packet(Packet(ts=NOW, from_id="!x", to_id="^all",
+                             portnum="TEXT_MESSAGE_APP", summary="x",
+                             raw={"decoded": {}})), None)
+check("sender parsing tolerates plain text", split_sender("no prefix here"),
+      ("", "no prefix here"))
+
+# ------------------------------------------------------ dedup-merge in state
+state = MeshState()
+state.protocol = "meshcore"
+rf = PathObservation(ts=NOW, kind="channel", path="4c", hops=1, snr=4.5)
+decoded = PathObservation(ts=NOW, kind="channel", path="4c", hops=1,
+                          origin_name="UsefulTowel", channel=2)
+_, first_new = state.note_path(rf)
+merged, second_new = state.note_path(decoded)
+check("same packet's two sightings fold into one record",
+      (first_new, second_new, len(state.paths)), (True, False, 1))
+check("the merge keeps the richer fields",
+      (merged.origin_name, merged.channel, merged.snr), ("UsefulTowel", 2, 4.5))
+
+# ------------------------------------------------------------ analysis/reply
+state.upsert_node({"user": {"id": "!abababab", "longName": "UsefulTowel"},
+                   "position": {"latitude": 30.00, "longitude": -97.90}})
+state.upsert_node({"user": {"id": "!4c112233", "longName": "Hilltop Repeater"},
+                   "position": {"latitude": 30.20, "longitude": -97.90}})
+state.my_node_id = "!2935ec59"
+me = state.upsert_node({"user": {"id": "!2935ec59", "longName": "Tachyon Home"},
+                        "position": {"latitude": 30.34, "longitude": -97.92}})
+me.is_self = True
+
+analysis = analyze(state, merged)
+check("the hop resolves to the repeater", analysis.hops[0].label, "Hilltop Repeater")
+check("route sums origin->hop->me",
+      analysis.route_km is not None and analysis.route_km > analysis.direct_km, True)
+
+reply = bot_reply(state, merged, "UsefulTowel")
+check("reply speaks the pathbot dialect",
+      reply.startswith("@[UsefulTowel] [1h] 4c route: ~") and "direct: ~" in reply, True)
+check("zero hops answers 'direct'",
+      bot_reply(state, PathObservation(ts=NOW, kind="channel", hops=0), "A"),
+      "@[A] direct (no path)")
+check("missing observation is answered honestly",
+      bot_reply(state, None, "A"), "@[A] heard you, but no path data for that message")
+
+# ---------------------------------------------------------------- the bot
+tmp = tempfile.mkdtemp(prefix="meshtui-pathbot-")
+store = Store(os.path.join(tmp, "mesh.db"), flush_interval=0.1)
+assert store.open(), store.error
+service = MeshService(store)
+service.state.protocol = "meshcore"
+service.state.channels = [(0, "Public"), (2, "#bot")]
+service.state.my_node_id = "!2935ec59"
+sent = []
+service.send_message = lambda text, dest, **kw: sent.append((text, dest)) or types.SimpleNamespace()
+
+bot = PathBot(service, channel="#bot")
+bot.WAIT_STEPS = 1
+bot.WAIT_STEP_SECONDS = 0.0
+
+def channel_msg(text, ts=None, channel=2):
+    from meshtui.model import ChatMessage
+    return ChatMessage(ts=ts or time.time(), from_id=f"channel:{channel}:anonymous",
+                       from_name="", to_id="^all", text=text, channel=channel)
+
+# the request's own packet lands first (as it does live)
+service.receive_packet(Packet(ts=time.time(), from_id="channel:2:anonymous",
+                              to_id="^all", channel=2, portnum="TEXT_MESSAGE_APP",
+                              summary="x", raw={"type": "CHAN",
+                                                "text": "UsefulTowel: !path",
+                                                "path": "4c", "path_len": 1,
+                                                "SNR": 4.5}))
+bot.route(channel_msg("UsefulTowel: !path"))
+check("one reply per request", len(sent), 1)
+check("reply is addressed and routed",
+      sent[0][0].startswith("@[UsefulTowel] [1h] 4c") and sent[0][1].index == 2, True)
+
+bot.route(channel_msg("UsefulTowel: !path"))
+check("cooldown blocks an immediate repeat", len(sent), 1)
+bot.route(channel_msg("B30-Automatica: @[UsefulTowel] [1h] 4c route: ~1mi"))
+check("another bot's reply is never answered", len(sent), 1)
+bot.route(channel_msg("Someone: !path", channel=0))
+check("other channels are ignored", len(sent), 1)
+bot.close()
+
+# ------------------------------------------------------------- persistence
+time.sleep(0.5)  # the store flushes on a background cadence
+persisted = store.recent_paths()
+check("observations are persisted", len(persisted) >= 1, True)
+check("a persisted row survives the round trip",
+      (persisted[-1].origin_name, persisted[-1].path, persisted[-1].hops),
+      ("UsefulTowel", "4c", 1))
+store.close()
+
+# -------------------------------------------------------- gateway command
+from meshtui.gateway import Gateway
+gw = Gateway.__new__(Gateway)
+gw.service = service
+result = gw.handle_request({"command": "paths", "limit": 10})
+check("gateway serves path history",
+      result["ok"] and result["paths"][-1]["origin_name"], "UsefulTowel")
+
+print()
+print("PASS" if not failures else f"FAIL: {failures}")
+sys.exit(1 if failures else 0)

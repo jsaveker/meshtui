@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from .bot import BotRouter, OpenAIResponsesProvider
+from .bot import BotRouter, OpenAIResponsesProvider, PathBot
 from .events import connected_info, event_from_wire, event_to_wire, node_record
 from .meshcore_link import MeshCoreLink, probe_meshcore
 from .model import ChannelRef, DeliveryStatus, DestinationRef, PeerRef, SendReceipt
@@ -125,6 +126,7 @@ class Gateway:
     def __init__(self, service: MeshService, link: RadioLink,
                  socket_path: Path | str | None = None,
                  bot_router: BotRouter | None = None,
+                 path_bot: PathBot | None = None,
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
@@ -139,11 +141,14 @@ class Gateway:
         self._owns_socket = False
         self._subscribers: list[queue.Queue] = []
         self._subs_lock = threading.Lock()
+        self.path_bot = path_bot
         self.service.attach_link(link)
         self.service.add_listener(self._log_event)
         self.service.add_listener(self._broadcast)
         if bot_router is not None:
             self.service.add_listener(bot_router.handle_event)
+        if path_bot is not None:
+            self.service.add_listener(path_bot.handle_event)
 
     @staticmethod
     def _log_event(kind: str, payload: Any) -> None:
@@ -336,6 +341,9 @@ class Gateway:
         if self.bot_router is not None:
             self.service.remove_listener(self.bot_router.handle_event)
             self.bot_router.close()
+        if self.path_bot is not None:
+            self.service.remove_listener(self.path_bot.handle_event)
+            self.path_bot.close()
         if self._owns_socket:
             try:
                 if self.socket_path.exists():
@@ -374,6 +382,16 @@ class Gateway:
                 "device": self.service.state.device_path,
                 "outbox_pending": pending,
             }
+        if command == "paths":
+            # History for the TUI's paths explorer: a gateway-attached client
+            # has no database of its own, only this socket.
+            try:
+                limit = max(1, min(5000, int(request.get("limit") or 2000)))
+            except (TypeError, ValueError):
+                limit = 2000
+            with self.service.lock:
+                rows = [dataclasses.asdict(o) for o in self.service.state.paths[-limit:]]
+            return {"ok": True, "paths": rows}
         if command == "delivery":
             message_id = str(request.get("message_id") or "").strip()
             if not message_id:
@@ -383,7 +401,8 @@ class Gateway:
                 return {"ok": False, "error": f"unknown message id {message_id}"}
             return {"ok": True, **snapshot}
         if command != "send":
-            return {"ok": False, "error": "supported commands: status, delivery, send, subscribe"}
+            return {"ok": False, "error":
+                    "supported commands: status, delivery, paths, send, subscribe"}
         text = request.get("text")
         if not isinstance(text, str) or not text.strip():
             return {"ok": False, "error": "text must not be empty"}
@@ -624,6 +643,7 @@ def choose_gateway_link(emit, *, port: str | None = None, host: str | None = Non
 def build_gateway(*, store: Store, port: str | None = None, host: str | None = None,
                   protocol: str = "auto", demo: bool = False,
                   socket_path: Path | str | None = None, bot_channel: str | int | None = None,
+                  pathbot_channel: str | int | None = None,
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
     link, selected = choose_gateway_link(
@@ -635,4 +655,5 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         if ai_endpoint:
             provider.endpoint = ai_endpoint
         router = BotRouter(service, provider, channel=bot_channel)
-    return Gateway(service, link, socket_path, router)
+    path_bot = PathBot(service, channel=pathbot_channel) if pathbot_channel is not None else None
+    return Gateway(service, link, socket_path, router, path_bot)

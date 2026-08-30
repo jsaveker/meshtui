@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+import threading
 import time
 from typing import Any
 
@@ -34,6 +35,7 @@ from .widgets.help import HelpScreen
 from .widgets.inspect import PacketInspector
 from .widgets.mesh_map import MapScreen
 from .widgets.nodes import NodeTable
+from .widgets.paths import PathScreen
 from .widgets.relays import RelayScreen
 from .widgets.sensors import SensorScreen
 from .widgets.packets import PacketFeed
@@ -86,6 +88,7 @@ class MeshTUI(App[None]):
         Binding("m", "show_map", "map"),
         Binding("a", "show_audit", "audit"),
         Binding("r", "show_relays", "relays"),
+        Binding("v", "show_paths", "paths"),
         Binding("w", "show_sensors", "sensors"),
         Binding("x", "show_admin", "remote admin"),
         Binding("c", "show_channels", "channels"),
@@ -789,6 +792,50 @@ class MeshTUI(App[None]):
 
     def action_show_relays(self) -> None:
         self.push_screen(RelayScreen(self.state))
+
+    def action_show_paths(self) -> None:
+        self._load_path_history()
+        self.push_screen(PathScreen(self.state))
+
+    def _load_path_history(self) -> None:
+        """Backfill persisted path observations, once.
+
+        Live observations accumulate from the packet stream in both modes;
+        history comes from our own store, or over the socket when a gateway
+        owns the database.
+        """
+        if getattr(self, "_paths_loaded", False):
+            return
+        self._paths_loaded = True
+        if self.store is not None and self.store.enabled:
+            for obs in self.store.recent_paths():
+                self.state.note_path(obs)
+            return
+        if self.gateway is None:
+            return
+
+        def fetch() -> None:
+            from .gateway import request_gateway
+            from .pathcalc import PathObservation
+            try:
+                result = request_gateway({"command": "paths", "limit": 2000},
+                                         self.gateway or None, timeout=10.0)
+            except Exception:  # noqa: BLE001 - explorer just starts empty
+                return
+            rows = result.get("paths") or []
+            fields = {"ts", "kind", "origin_id", "origin_name", "path",
+                      "hops", "snr", "rssi", "channel"}
+            def apply() -> None:
+                for row in rows:
+                    if isinstance(row, dict):
+                        try:
+                            self.state.note_path(PathObservation(
+                                **{k: v for k, v in row.items() if k in fields}))
+                        except TypeError:
+                            continue
+            self.call_from_thread(apply)
+
+        threading.Thread(target=fetch, name="paths-history", daemon=True).start()
 
     def action_show_sensors(self) -> None:
         self.push_screen(SensorScreen(self.state))
