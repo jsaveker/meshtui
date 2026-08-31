@@ -727,8 +727,15 @@ class Store:
             params.append(float(end_ts))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, min(100000, int(limit))))
-        rows = self._read(
-            f"SELECT * FROM packets{where} ORDER BY ts ASC LIMIT ?", tuple(params))
+        if clauses:
+            query = f"SELECT * FROM packets{where} ORDER BY ts ASC LIMIT ?"
+        else:
+            # A bare limit means "the most recent window", not the dawn of
+            # the database - which replayed months-old traffic from a prior
+            # radio and misdetected the protocol. Newest N, played in order.
+            query = ("SELECT * FROM (SELECT * FROM packets ORDER BY ts DESC"
+                     " LIMIT ?) ORDER BY ts ASC")
+        rows = self._read(query, tuple(params))
         return [dict(row) for row in rows]
 
     def replay_messages(self, start_ts: float | None = None,
@@ -743,8 +750,12 @@ class Store:
             params.append(float(end_ts))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, min(100000, int(limit))))
-        rows = self._read(
-            f"SELECT * FROM messages{where} ORDER BY ts ASC LIMIT ?", tuple(params))
+        if clauses:
+            query = f"SELECT * FROM messages{where} ORDER BY ts ASC LIMIT ?"
+        else:
+            query = ("SELECT * FROM (SELECT * FROM messages ORDER BY ts DESC"
+                     " LIMIT ?) ORDER BY ts ASC")
+        rows = self._read(query, tuple(params))
         return [ChatMessage(
             ts=row["ts"], from_id=row["from_id"] or "", from_name="",
             to_id=row["to_id"] or "", text=row["text"] or "",

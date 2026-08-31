@@ -123,7 +123,7 @@ const status=document.querySelector('#status');status.textContent=(data.connecte
 data.nodes.length+' nodes'+(data.airtime_1h==null?'':'  air 1h '+data.airtime_1h.toFixed(1)+'%');renderMap(data);
 const chat=document.querySelector('#chat');chat.replaceChildren(text('div','CHAT // RECENT','title'));for(const m of data.messages.slice().reverse()){
 const row=text('div','',m.outgoing?'msg out':'msg');const meta=text('div','', 'meta');const who=text('strong',m.from);meta.append(who,
-document.createTextNode('  '+new Date(m.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'  '+(m.dm?'DM':'#'+m.channel)));
+document.createTextNode('  '+new Date(m.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'  '+(m.dm?'DM':(m.channel&&m.channel.startsWith('#')?m.channel:'#'+m.channel))));
 if(m.path_hash_size)meta.append(text('span','  ['+m.path_hash_size+'B'+(m.route_mode==='flood'?' F':'')+']','badge'));
 row.append(meta,text('p',m.text));chat.append(row)}const nodes=document.querySelector('#nodes');nodes.replaceChildren(text('div','NODES // HEALTH','title'));
 for(const n of data.nodes.slice().sort((a,b)=>(b.last_heard||0)-(a.last_heard||0))){const d=n.last_heard==null?1e12:now-n.last_heard;

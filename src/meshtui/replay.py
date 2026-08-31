@@ -137,9 +137,18 @@ def build_replay_gateway(database: str | Path, *, socket_path: str | Path | None
     packet_rows = source.replay_packets(start_ts, end_ts, limit)
     packets = [packet_from_row(row) for row in packet_rows]
     messages = source.replay_messages(start_ts, end_ts, limit)
+    if packets and messages and start_ts is None and end_ts is None:
+        # Bare-limit windows cover different spans of history - N packets are
+        # hours, N chat messages are days - and merging them stalls the ghost
+        # in days of chat-only gaps before the first packet plays. Anchor the
+        # replay on the dense packet window.
+        window_start = packets[0].ts
+        messages = [m for m in messages if m.ts >= window_start]
     nodes = source.known_nodes()
     if protocol == "auto":
-        meshcore_ports = {"RXLOG_APP", "ADVERT", "PATH", "CLI", "ACK", "STATUS"}
+        # The synthetic portnums MeshCore traffic is actually stored under.
+        meshcore_ports = {"RXLOG_APP", "ADVERT_APP", "PATH_APP", "ADMIN_APP",
+                          "ROUTING_APP", "STATUS_APP"}
         protocol = "meshcore" if any(packet.portnum in meshcore_ports
                                      for packet in packets) else "meshtastic"
     observer = source.get_meta(LAST_OBSERVER)
