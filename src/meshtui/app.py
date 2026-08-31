@@ -1012,31 +1012,66 @@ class MeshTUI(App[None]):
             if len(parts) < 3:
                 self.chat_notice("usage: /dm <node> <text>", "yellow")
                 return
-            node = self.state.resolve(parts[1])
-            if node is None:
-                self.chat_notice(f"unknown node: {parts[1]}", "yellow")
+            node, rest, problem = self._resolve_target(f"{parts[1]} {parts[2]}")
+            if node is None or not rest:
+                self.chat_notice(problem or "usage: /dm <node> <text>", "yellow")
                 return
             self.query_one(ChatPane).focus_dm(node.node_id, self.state)
-            self._send(parts[2], node.node_id, 0)
+            self._send(rest, node.node_id, 0)
         elif cmd == "/trace":
             if len(parts) < 2:
                 self.chat_notice("usage: /trace <node> [maxhops]  "
                                  "(1 tests only the direct link)", "yellow")
                 return
-            node = self.state.resolve(parts[1])
+            node, rest, problem = self._resolve_target(
+                " ".join(p for p in parts[1:] if p))
             if node is None:
-                self.chat_notice(f"unknown node: {parts[1]}", "yellow")
+                self.chat_notice(problem or f"unknown node: {parts[1]}", "yellow")
                 return
             hop_limit = 5
-            if len(parts) >= 3:
+            if rest:
                 try:
-                    hop_limit = max(1, min(7, int(parts[2].split()[0])))
+                    hop_limit = max(1, min(7, int(rest.split()[0])))
                 except ValueError:
                     self.chat_notice("maxhops must be a number 1-7", "yellow")
                     return
             self._trace(node.node_id, hop_limit)
         else:
             self.chat_notice(f"unknown command {cmd} - try /help", "yellow")
+
+    def _resolve_target(self, remainder: str) -> tuple[Any, str, str | None]:
+        """Match the longest leading node name in `remainder`.
+
+        Returns (node, rest-of-string, problem). Multi-word names work
+        ('/dm Tachyon Mobile hi'), our own radio is never a target, and an
+        ambiguous token is reported with ids instead of silently taking the
+        first match - which once DMed the user's own radio because two nodes
+        shared the short name 'Tach'. When several nodes share a name, one
+        heard recently beats ghosts not heard in a week.
+        """
+        tokens = remainder.split()
+        for cut in range(min(len(tokens), 5), 0, -1):
+            token = " ".join(tokens[:cut])
+            matches = self.state.resolve_all(token)
+            if not matches:
+                continue
+            rest = " ".join(tokens[cut:])
+            others = [n for n in matches
+                      if not n.is_self and n.node_id != self.state.my_node_id]
+            if not others:
+                return None, rest, "that's this radio - pick another node"
+            if len(others) > 1:
+                week_ago = time.time() - 7 * 86400
+                alive = [n for n in others
+                         if n.last_heard and n.last_heard > week_ago]
+                if len(alive) == 1:
+                    return alive[0], rest, None
+                names = ", ".join(f"{n.long_name or '?'} ({n.node_id})"
+                                  for n in others[:4])
+                return None, rest, f"'{token}' is ambiguous: {names}"
+            return others[0], rest, None
+        first = tokens[0] if tokens else ""
+        return None, "", f"unknown node: {first}"
 
     def _send(self, text: str, dest: str, channel: int) -> bool:
         if self.protocol == "auto" and not self.state.connected:

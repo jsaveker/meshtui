@@ -303,19 +303,29 @@ class MeshState:
 
     def resolve(self, token: str) -> Node | None:
         """Look a node up by !id, short name, or long name (case-insensitive)."""
+        matches = self.resolve_all(token)
+        return matches[0] if matches else None
+
+    def resolve_all(self, token: str) -> list[Node]:
+        """Every node a token could mean, within the strongest matching tier.
+
+        MeshCore short names are the first four letters of the long name, so
+        'Tach' can mean both Tachyon Home and Tachyon Mobile - a caller that
+        silently takes the first match once DMed the user's own radio.
+        """
         token = token.strip()
         if not token:
-            return None
+            return []
         if token in self.nodes:
-            return self.nodes[token]
+            return [self.nodes[token]]
         low = token.lower()
-        for node in self.nodes.values():
-            if node.short_name.lower() == low or node.node_id.lower() == low:
-                return node
-        for node in self.nodes.values():
-            if node.long_name.lower() == low:
-                return node
-        return None
+        for tier in (lambda n: n.node_id.lower() == low,
+                     lambda n: n.long_name.lower() == low,
+                     lambda n: n.short_name.lower() == low):
+            matches = [n for n in self.nodes.values() if tier(n)]
+            if matches:
+                return matches
+        return []
 
     def sorted_nodes(self, key: str = "heard") -> list[Node]:
         nodes = list(self.nodes.values())

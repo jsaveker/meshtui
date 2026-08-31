@@ -142,6 +142,30 @@ async def main():
               inp._mention_query() is None, True)
         inp.value = ""
 
+        print("\\nDM target resolution (the 'two nodes named Tach' incident)")
+        st.my_node_id = "!11110000"
+        me2 = st.upsert_node({"user": {"id": "!11110000", "longName": "Tachyon Home",
+                                       "shortName": "Tach"}, "lastHeard": time.time()})
+        me2.is_self = True
+        st.upsert_node({"user": {"id": "!22220000", "longName": "Tachyon Mobile",
+                                 "shortName": "Tach"}, "lastHeard": time.time()})
+        st.upsert_node({"user": {"id": "!33330000", "longName": "Tachyon Mobile",
+                                 "shortName": "Tach"}})  # ghost: never heard
+        node, rest, problem = app._resolve_target("Tach hello there")
+        check("shared short name resolves to the OTHER node, never self",
+              (node and node.node_id, rest, problem), ("!22220000", "hello there", None))
+        node, rest, problem = app._resolve_target("Tachyon Mobile hello")
+        check("multi-word names resolve, ghosts lose to the living",
+              (node and node.node_id, rest), ("!22220000", "hello"))
+        node, _, problem = app._resolve_target("Tachyon Home yo")
+        check("targeting the radio itself is refused with a reason",
+              (node, "this radio" in (problem or "")), (None, True))
+        st.upsert_node({"user": {"id": "!33330000"}, "lastHeard": time.time()})
+        node, _, problem = app._resolve_target("Tachyon Mobile hi")
+        check("two living namesakes are reported as ambiguous with ids",
+              (node, "!22220000" in (problem or "") and "!33330000" in (problem or "")),
+              (None, True))
+
         print("\\ncorner and overlay stay in sync")
         await pilot.press("escape"); await pilot.pause(0.3)
         check("overlay closed", isinstance(app.screen, ChatScreen), False)
