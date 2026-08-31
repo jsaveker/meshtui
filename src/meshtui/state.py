@@ -42,7 +42,10 @@ class ForeignChannel:
 
     def observe(self, packet: Packet) -> None:
         self.packets += 1
-        self.senders.add(packet.from_id)
+        if packet.from_id != "!00000000":
+            # MeshCore group texts are cryptographically anonymous; counting
+            # the unknown-sender placeholder would fake a sender.
+            self.senders.add(packet.from_id)
         self.ports[packet.portnum] += 1
         self.last_seen = packet.ts
         if packet.snr is not None:
@@ -452,7 +455,7 @@ class MeshState:
         self._record_motion(packet)
         # Packets we could not decrypt carry the channel HASH here; decoded
         # ones carry the channel INDEX. Only the former are "foreign".
-        if packet.portnum == "ENCRYPTED" or packet.decrypted_with:
+        if packet.portnum == "ENCRYPTED" or packet.encrypted or packet.decrypted_with:
             channel = self.foreign_channels.get(packet.channel)
             if channel is None:
                 channel = ForeignChannel(hash=packet.channel, first_seen=packet.ts)

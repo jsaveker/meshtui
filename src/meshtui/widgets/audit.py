@@ -169,6 +169,17 @@ class AuditView(Static):
 
     def _footnote(self) -> Text:
         note = Text()
+        if self.state.protocol == "meshcore":
+            note.append("MeshCore's Public channel key ships in every firmware "
+                        "image; other channel keys are random but shared with "
+                        "everyone holding the QR.\n", style="grey54")
+            note.append("Group texts carry no sender identity, so the last table "
+                        "can only count traffic, not name who sent it.\n",
+                        style="grey54")
+            note.append("Everything below the first table is metadata that "
+                        "travels in the clear - it needs no key at all.",
+                        style="grey54")
+            return note
         note.append("Published keys are the default channel key and the "
                     "single-byte shorthands, both listed in Meshtastic's own source.\n",
                     style="grey54")

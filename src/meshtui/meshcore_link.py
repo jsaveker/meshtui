@@ -509,11 +509,12 @@ class MeshCoreLink(RadioLink):
                 to_id: str = BROADCAST, snr: float | None = None,
                 rssi: int | None = None, hops: int | None = None,
                 channel: int = 0, relay_node: int | None = None,
+                encrypted: bool = False,
                 raw: dict[str, Any] | None = None) -> None:
         self.emit("packet", Packet(
             ts=time.time(), from_id=from_id, to_id=to_id, portnum=portnum,
             summary=summary, channel=channel, snr=snr, rssi=rssi, hops=hops,
-            relay_node=relay_node, raw=raw or {},
+            relay_node=relay_node, encrypted=encrypted, raw=raw or {},
         ))
 
     @staticmethod
@@ -710,8 +711,17 @@ class MeshCoreLink(RadioLink):
             summary = f"advert from {data.get('adv_name') or from_id} (rf)"
             if hops:
                 summary += f" via {hops} hop{'s' if hops > 1 else ''}"
+        # A group-text on a channel we hold no key for is exactly what the
+        # audit's "channels you hold no key for" table exists to count.
+        chan_hash = data.get("chan_hash")
+        foreign = bool(kind == "grp_txt" and chan_hash and not data.get("chan_name"))
+        try:
+            foreign_hash = int(str(chan_hash), 16) if foreign else 0
+        except ValueError:
+            foreign, foreign_hash = False, 0
         self._packet(PORT_RXLOG, from_id, summary, snr=snr, rssi=rssi,
-                     hops=hops, relay_node=relay, raw=data)
+                     hops=hops, relay_node=relay, encrypted=foreign,
+                     channel=foreign_hash, raw=data)
         # A repeated group-text is our (or someone's) channel message being
         # rebroadcast. The path lists the repeaters that carried it and pkt_hash
         # ties every repeat of the same packet together.
@@ -911,6 +921,38 @@ class MeshCoreLink(RadioLink):
                 self.channel_hashes[index] = _hex1(chash)
         self.channels = found or [(0, "Public")]
         self.emit("mc_channels", list(self.channels))
+        self.emit("mc_channel_security", self._channel_security())
+
+    def _channel_security(self) -> list[dict[str, Any]]:
+        """Audit-shaped verdicts for our own channels, from the loaded keys.
+
+        MeshCore has no PSK tiers to grade: the Public channel's key ships in
+        every firmware image (readable by definition), and every other key is
+        random but shared with whoever holds the channel QR - private from
+        outsiders, not from the club.
+        """
+        records: list[dict[str, Any]] = []
+        for index, name in self.channels:
+            secret = self.channel_secrets.get(index)
+            secret_bytes = bytes(secret) if isinstance(secret, (bytes, bytearray)) else b""
+            if index == 0 and name.strip().lstrip("#").casefold() == "public":
+                level = "PUBLIC"
+                detail = "the default key ships in every MeshCore firmware"
+            elif secret_bytes and len(set(secret_bytes)) <= 1:
+                level = "WEAK"
+                detail = "degenerate key (single repeating byte)"
+            elif len(secret_bytes) >= 16:
+                level = "AES128"
+                detail = "random key, shared with everyone who has the QR"
+            else:
+                level = "UNKNOWN"
+                detail = "key not readable from this firmware"
+            hash_hex = self.channel_hashes.get(index)
+            records.append({
+                "index": index, "name": name, "level": level, "detail": detail,
+                "hash": int(hash_hex, 16) if hash_hex else None,
+            })
+        return records
 
     # ------------------------------------------------------------- commands
 

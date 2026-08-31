@@ -116,6 +116,49 @@ state.add_packet(Packet(ts=time.time(), from_id="!abababab", to_id="^all",
                         portnum="RXLOG_APP", summary="advert (rf)", snr=2.0, hops=0))
 check("a direct packet credits the origin", origin.snr, 2.0)
 
+# ---------------------------------------------- channel audit (meshcore)
+events, link = collect()
+link.channels = [(0, "Public"), (2, "#bot"), (5, "#weak"), (7, "#sealed")]
+link.channel_secrets = {0: bytes(range(16)), 2: bytes(range(16, 32)),
+                        5: b"\x42" * 16}
+link.channel_hashes = {0: "11", 2: "2a"}
+records = link._channel_security()
+by_name = {r["name"]: r for r in records}
+check("the Public channel is called what it is",
+      (by_name["Public"]["level"], by_name["Public"]["hash"]), ("PUBLIC", 0x11))
+check("a random shared key grades AES128 with an honest caveat",
+      (by_name["#bot"]["level"], "QR" in by_name["#bot"]["detail"]), ("AES128", True))
+check("a degenerate key is flagged weak", by_name["#weak"]["level"], "WEAK")
+check("an unreadable key stays unknown", by_name["#sealed"]["level"], "UNKNOWN")
+
+audit_service = MeshService(store=None)
+audit_service.handle_event("mc_channel_security", records)
+check("channel verdicts land in state for the audit screen",
+      [c.level for c in audit_service.state.local_channels],
+      ["PUBLIC", "AES128", "WEAK", "UNKNOWN"])
+
+# a group text on a channel we hold no key for feeds the foreign table
+events, link = collect()
+link._on_rx_log(types.SimpleNamespace(payload={
+    "payload_typename": "GRP_TXT", "payload_length": 40, "snr": -2.0,
+    "chan_hash": "7f", "path": "4c", "path_len": 1}))
+foreign_packet = next(p for k, p in events if k == "packet")
+check("an unknown-channel group text is marked encrypted with its hash",
+      (foreign_packet.encrypted, foreign_packet.channel), (True, 0x7F))
+audit_state = MeshState()
+audit_state.add_packet(foreign_packet)
+check("it lands in the foreign-channels table, sender honestly uncounted",
+      (0x7F in audit_state.foreign_channels,
+       len(audit_state.foreign_channels[0x7F].senders)), (True, 0))
+known = types.SimpleNamespace(payload={
+    "payload_typename": "GRP_TXT", "payload_length": 40, "snr": -2.0,
+    "chan_hash": "11", "chan_name": "#bot", "message": "A: hi",
+    "path": "4c", "path_len": 1})
+events, link = collect()
+link._on_rx_log(known)
+known_packet = next(p for k, p in events if k == "packet")
+check("a channel we can read is not foreign", known_packet.encrypted, False)
+
 # --------------------------------------------------- local radio stats poll
 events, link = collect()
 class FakeStats:

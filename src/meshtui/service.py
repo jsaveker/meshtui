@@ -275,6 +275,12 @@ class MeshService:
                 result = self.apply_receipt(payload)
             elif kind == "mc_contact":
                 result = self.receive_contact(payload)
+            elif kind == "mc_channel_security":
+                self.state.local_channels = [
+                    LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
+                                 level=c.get("level", "UNKNOWN"),
+                                 detail=c.get("detail", ""), hash=c.get("hash"))
+                    for i, c in enumerate(payload or [])]
             elif kind == "mc_channels":
                 self.state.channels = list(payload) or [(0, "Public")]
             elif kind == "mc_autoadd":

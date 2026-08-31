@@ -555,6 +555,13 @@ class MeshTUI(App[None]):
             self.state.channels = list(payload) or [(0, "Public")]
             self.query_one(ChatPane).set_channels(self.state)
             self._refresh_overlay()
+        elif kind == "mc_channel_security":
+            from .state import LocalChannel
+            self.state.local_channels = [
+                LocalChannel(index=c.get("index", i), name=c.get("name", f"ch{i}"),
+                             level=c.get("level", "UNKNOWN"),
+                             detail=c.get("detail", ""), hash=c.get("hash"))
+                for i, c in enumerate(payload or [])]
         elif kind == "mc_login":
             node_id, ok = payload
             if ok:
