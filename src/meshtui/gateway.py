@@ -130,6 +130,7 @@ class Gateway:
                  path_bot: PathBot | None = None,
                  test_bot: TestBot | None = None,
                  map_uploader: Any | None = None,
+                 weather_bot: Any | None = None,
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
@@ -147,6 +148,7 @@ class Gateway:
         self.path_bot = path_bot
         self.test_bot = test_bot
         self.map_uploader = map_uploader
+        self.weather_bot = weather_bot
         self.service.attach_link(link)
         self.service.add_listener(self._log_event)
         self.service.add_listener(self._broadcast)
@@ -279,6 +281,8 @@ class Gateway:
         self._retry_thread.start()
         threading.Thread(target=self._watchdog_loop,
                          name="gateway-watchdog", daemon=True).start()
+        if self.weather_bot is not None:
+            self.weather_bot.start(self._stop)
 
     def serve_forever(self) -> None:
         if self._server is None:
@@ -686,6 +690,8 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   testbot_channel: str | int | None = None,
                   testbot_location: str = "",
                   map_upload: bool = False,
+                  weatherbot_channel: str | int | None = None,
+                  weatherbot_times: str = "07:00,12:00,18:00",
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
     link, selected = choose_gateway_link(
@@ -707,4 +713,10 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         # fetches when asked to.
         link.export_identity = True
         map_uploader = MapUploader(service, link)
-    return Gateway(service, link, socket_path, router, path_bot, test_bot, map_uploader)
+    weather_bot = None
+    if weatherbot_channel is not None:
+        from .weatherbot import WeatherBot
+        weather_bot = WeatherBot(service, channel=weatherbot_channel,
+                                 times=weatherbot_times, location=testbot_location)
+    return Gateway(service, link, socket_path, router, path_bot, test_bot,
+                   map_uploader, weather_bot)
