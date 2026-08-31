@@ -17,7 +17,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -153,10 +152,9 @@ class BotRouter:
         self._last_sender: dict[str, float] = {}
         self._recent: deque[float] = deque()
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mesh-bot")
 
     def close(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        pass  # workers are daemon threads; nothing to tear down
 
     def handle_event(self, kind: str, payload) -> None:
         if kind == "chat" and isinstance(payload, ChatMessage):
@@ -164,7 +162,12 @@ class BotRouter:
 
     def submit(self, message: ChatMessage) -> None:
         if self._eligible(message):
-            self._executor.submit(self.route, message)
+            # A daemon thread per (rare) request: executor threads are
+            # non-daemon and joined at interpreter exit, so an in-flight
+            # HTTP call could hold shutdown past systemd's patience and
+            # earn a SIGKILL mid-serial-write - which wedges the radio.
+            threading.Thread(target=self.route, args=(message,),
+                             daemon=True, name="mesh-bot").start()
 
     def _channel_matches(self, index: int) -> bool:
         if isinstance(self.channel, int):

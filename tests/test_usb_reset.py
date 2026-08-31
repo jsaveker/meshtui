@@ -6,7 +6,7 @@ stalling control requests); a pulled cable removes the node instead. The old
 code lumped every OSError into "unplug and replug", which sent the user down
 the reboot path when only a device reset could help.
 """
-import sys, tempfile, threading, types
+import sys, tempfile, threading, time, types
 
 from meshtui.meshcore_link import MeshCoreLink
 from meshtui import gateway as gateway_mod
@@ -109,6 +109,43 @@ check("reset waits for two wedged attempts, then fires once per episode",
       resets, ["/dev/ttyFAKE0"])
 check("reset failure is surfaced as an error event",
       any(k == "error" and "no permission" in p for k, p in gw.service.events), True)
+
+# --------------------------- watchdog: the syscall-blocked wedge nobody returns from
+watch_resets = []
+def watch_reset(port):
+    watch_resets.append(port)
+    return True, "reset (test)"
+
+gw2 = gateway_mod.Gateway.__new__(gateway_mod.Gateway)
+gw2.service = FakeService()
+gw2.link = WedgedLink()
+gw2._stop = threading.Event()
+gw2.WATCHDOG_GRACE = 0.15
+gw2.WATCHDOG_POLL = 0.05
+real_reset2, gateway_mod.try_usb_reset = gateway_mod.try_usb_reset, watch_reset
+try:
+    watcher = threading.Thread(target=gw2._watchdog_loop, daemon=True)
+    watcher.start()
+    deadline = time.time() + 3.0
+    while not watch_resets and time.time() < deadline:
+        time.sleep(0.02)
+    fired_once = len(watch_resets)
+    time.sleep(0.08)  # inside the post-reset grace: must not fire again yet
+    fired_still = len(watch_resets)
+    gw2.service.state.connected = True   # link comes back: watchdog stands down
+    time.sleep(0.3)
+    fired_after_recovery = len(watch_resets)
+    gw2._stop.set()
+    watcher.join(timeout=2.0)
+finally:
+    gateway_mod.try_usb_reset = real_reset2
+check("watchdog resets a link that stays dead past the grace period",
+      (fired_once >= 1, watch_resets[0]), (True, "/dev/ttyFAKE0"))
+check("watchdog backs off after firing", fired_still, fired_once)
+check("watchdog stands down once the link recovers",
+      fired_after_recovery, fired_once)
+check("watchdog announced itself",
+      any("watchdog:" in p for _, p in gw2.service.events), True)
 
 print()
 print("PASS" if not failures else f"FAIL: {failures}")

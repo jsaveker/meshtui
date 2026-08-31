@@ -11,6 +11,7 @@ import socket
 import socketserver
 import stat
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -276,6 +277,8 @@ class Gateway:
         self._retry_thread = threading.Thread(
             target=self._retry_loop, name="gateway-outbox", daemon=True)
         self._retry_thread.start()
+        threading.Thread(target=self._watchdog_loop,
+                         name="gateway-watchdog", daemon=True).start()
 
     def serve_forever(self) -> None:
         if self._server is None:
@@ -290,6 +293,33 @@ class Gateway:
     def _retry_loop(self) -> None:
         while not self._stop.wait(1.0):
             self.service.process_outbox()
+
+    # How long the radio may stay disconnected before the watchdog resets its
+    # USB device, and the poll cadence. Class attributes so tests can shrink
+    # them.
+    WATCHDOG_GRACE = 90.0
+    WATCHDOG_POLL = 10.0
+
+    def _watchdog_loop(self) -> None:
+        """Reset the radio's USB device if the link stays dead too long.
+
+        The reconnect loop handles failures that RETURN; this handles the one
+        that doesn't - a serial open blocked inside a kernel syscall against a
+        wedged device, which freezes the connect coroutine's event loop so no
+        asyncio timeout can ever fire. A USB reset re-enumerates the device,
+        which forces the stuck syscall to return, unsticking everything.
+        """
+        last_ok = time.time()
+        while not self._stop.wait(self.WATCHDOG_POLL):
+            if self.service.state.connected:
+                last_ok = time.time()
+                continue
+            if time.time() - last_ok < self.WATCHDOG_GRACE:
+                continue
+            ok, detail = try_usb_reset(getattr(self.link, "port", None))
+            self.service.handle_event("status" if ok else "error",
+                                      f"watchdog: {detail}")
+            last_ok = time.time()  # back off a full grace period either way
 
     def _radio_loop(self) -> None:
         """Keep reopening a failed or disconnected companion link."""

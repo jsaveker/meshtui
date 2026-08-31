@@ -25,7 +25,6 @@ import logging
 import threading
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -159,11 +158,9 @@ class MapUploader:
         self.uploads = 0
         self._seen: dict[str, tuple[int, float]] = {}  # adv_key -> (adv_ts, uploaded_at)
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1,
-                                            thread_name_prefix="map-upload")
 
     def close(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        pass  # workers are daemon threads; nothing to tear down
 
     def handle_event(self, kind: str, payload: Any) -> None:
         if kind != "packet" or getattr(payload, "portnum", "") != "RXLOG_APP":
@@ -171,7 +168,10 @@ class MapUploader:
         raw = payload.raw if isinstance(payload.raw, dict) else {}
         if raw.get("payload_type") != 4:  # ADVERT
             return
-        self._executor.submit(self.process, dict(raw))
+        # Daemon thread per (rare) advert: an executor's non-daemon worker
+        # mid-POST would hold interpreter exit past systemd's stop timeout.
+        threading.Thread(target=self.process, args=(dict(raw),),
+                         daemon=True, name="map-upload").start()
 
     def _eligible(self, raw: dict) -> tuple[str, str, int] | None:
         adv_key = str(raw.get("adv_key") or "").lower().removeprefix("0x")

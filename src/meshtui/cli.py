@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -102,6 +103,11 @@ def run_gateway(argv: list[str]) -> int:
             store.close()
         except KeyboardInterrupt:
             pass
+        # Exit without interpreter teardown: everything above already flushed
+        # and released, and teardown joins any lingering non-daemon thread -
+        # an in-flight HTTP call once held that past systemd's stop timeout,
+        # and the resulting SIGKILL mid-serial-write wedged the radio.
+        os._exit(0)
     return 0
 
 
