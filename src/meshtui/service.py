@@ -409,6 +409,12 @@ class MeshService:
         if payload_bytes(text) > limit:
             return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
                                detail=f"message is {payload_bytes(text)} bytes; limit is {limit}")
+        if (isinstance(destination, PeerRef) and self.state.my_node_id
+                and destination.node_id == self.state.my_node_id):
+            # A radio has no contact entry for itself, so this would retry
+            # into a cryptic failure; say what actually went wrong instead.
+            return SendReceipt(message_id, destination, DeliveryStatus.FAILED,
+                               detail="that is this radio's own id - it cannot DM itself")
         outbound = OutboundMessage(
             message_id=message_id, destination=destination, text=text,
             max_attempts=max(1, max_attempts), next_attempt_ts=now,

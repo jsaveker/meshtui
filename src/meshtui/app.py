@@ -886,6 +886,12 @@ class MeshTUI(App[None]):
         if node is None:
             self.note("select a node first", "yellow")
             return
+        if node.is_self or node.node_id == self.state.my_node_id:
+            # The cursor starts on our own row, and similarly-named nodes
+            # (Tachyon Home vs Tachyon Mobile) make this an easy misfire that
+            # used to end in a cryptic 3-attempt delivery failure.
+            self.note("that's this radio - pick the node you want to DM", "yellow")
+            return
         self.query_one(ChatPane).focus_dm(node.node_id, self.state)
         self._open_overlay(focus_input=True)
 
