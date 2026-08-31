@@ -127,6 +127,11 @@ async def main():
         check("tab completes the bracketed mention", inp.value, "@[Pyratik_T1000] ")
         await pilot.press("tab"); await pilot.pause(0.2)
         check("tab again cycles to the next candidate", inp.value, "@[Pyratik_Base] ")
+        check("the active candidate is highlighted in the hints",
+              "[reverse] Pyratik_Base [/reverse]" in str(inp.border_subtitle)
+              and "⇧⇥ prev" in str(inp.border_subtitle), True)
+        await pilot.press("shift+tab"); await pilot.pause(0.2)
+        check("shift+tab cycles backwards", inp.value, "@[Pyratik_T1000] ")
         inp.value = "hello "
         inp.cursor_position = len(inp.value)
         await pilot.press("@", "n", "b", "d"); await pilot.pause(0.2)

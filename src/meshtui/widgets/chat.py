@@ -106,23 +106,44 @@ class ChatInput(Input):
         return merged[:6]
 
     def _refresh_hints(self) -> None:
+        if self._cycle_value is not None and self.value == self._cycle_value:
+            self._show_cycle_hints()
+            return
         query = self._mention_query()
         self._hits = self._candidates(query[1]) if query else []
         if self._hits:
-            shown = "  ".join(self._hits[:4])
-            self.border_subtitle = f" {shown[:70]}  ⇥ complete "
+            from rich.markup import escape
+            shown = "  ".join(escape(n[:24]) for n in self._hits[:4])
+            self.border_subtitle = f" {shown}  ⇥ complete "
         else:
             self.border_subtitle = ""
 
+    def _show_cycle_hints(self) -> None:
+        """The cycle made visible: the inserted candidate highlighted among
+        its alternatives, so Tab/Shift+Tab reads as moving a selection."""
+        from rich.markup import escape
+        first = max(0, self._cycle_index - 1)
+        window = self._cycle_hits[first:first + 4]
+        parts = []
+        for offset, name in enumerate(window):
+            label = escape(name[:24])
+            if first + offset == self._cycle_index:
+                parts.append(f"[reverse] {label} [/]")
+            else:
+                parts.append(label)
+        more = len(self._cycle_hits) - (first + len(window))
+        tail = f" +{more}" if more > 0 else ""
+        self.border_subtitle = " " + "  ".join(parts) + tail + "  ⇥ next ⇧⇥ prev "
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if self.value != self._cycle_value:
-            self._cycle_value = None  # any edit ends a Tab cycle
+            self._cycle_value = None  # any edit ends a Tab cycle (and confirms)
         self._refresh_hints()
 
-    def _complete_mention(self) -> None:
+    def _complete_mention(self, step: int = 1) -> None:
         if self._cycle_value is not None and self.value == self._cycle_value:
-            # Tab again: swap in the next candidate.
-            self._cycle_index = (self._cycle_index + 1) % len(self._cycle_hits)
+            # Tab again: swap in the next (or previous) candidate.
+            self._cycle_index = (self._cycle_index + step) % len(self._cycle_hits)
             start = self._cycle_start
         else:
             query = self._mention_query()
@@ -135,14 +156,16 @@ class ChatInput(Input):
         self.value = completed
         self.cursor_position = len(completed)
         self._cycle_value = completed
+        self._show_cycle_hints()
 
     async def _on_key(self, event) -> None:
-        if event.key == "tab":
+        if event.key in ("tab", "shift+tab"):
+            backwards = event.key == "shift+tab"
             in_cycle = self._cycle_value is not None and self.value == self._cycle_value
-            if in_cycle or (self._mention_query() and self._hits):
+            if in_cycle or (not backwards and self._mention_query() and self._hits):
                 event.stop()
                 event.prevent_default()
-                self._complete_mention()
+                self._complete_mention(-1 if backwards else 1)
                 return
         await super()._on_key(event)
 
