@@ -33,13 +33,13 @@ check("advert sighting derives an observation",
       ("advert", "!abababab", "Hilltop", 2, "1a4c"))
 
 msg = Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all", channel=2,
-             portnum="TEXT_MESSAGE_APP", summary='"UsefulTowel: !path"',
-             raw={"type": "CHAN", "text": "UsefulTowel: !path", "path": "4c",
+             portnum="TEXT_MESSAGE_APP", summary='"FieldScout: !path"',
+             raw={"type": "CHAN", "text": "FieldScout: !path", "path": "a1",
                   "path_len": 1, "SNR": 4.5})
 obs = obs_from_packet(msg)
 check("decoded channel message derives an observation",
       (obs.kind, obs.origin_name, obs.hops, obs.path, obs.snr, obs.channel),
-      ("channel", "UsefulTowel", 1, "4c", 4.5, 2))
+      ("channel", "FieldScout", 1, "a1", 4.5, 2))
 
 direct = obs_from_packet(Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all",
                                 channel=2, portnum="TEXT_MESSAGE_APP", summary="x",
@@ -55,15 +55,15 @@ check("sender parsing tolerates plain text", split_sender("no prefix here"),
 # ------------------------------------------------------ dedup-merge in state
 state = MeshState()
 state.protocol = "meshcore"
-rf = PathObservation(ts=NOW, kind="channel", path="4c", hops=1, snr=4.5)
-decoded = PathObservation(ts=NOW, kind="channel", path="4c", hops=1,
-                          origin_name="UsefulTowel", channel=2)
+rf = PathObservation(ts=NOW, kind="channel", path="a1", hops=1, snr=4.5)
+decoded = PathObservation(ts=NOW, kind="channel", path="a1", hops=1,
+                          origin_name="FieldScout", channel=2)
 _, first_new = state.note_path(rf)
 merged, second_new = state.note_path(decoded)
 check("same packet's two sightings fold into one record",
       (first_new, second_new, len(state.paths)), (True, False, 1))
 check("the merge keeps the richer fields",
-      (merged.origin_name, merged.channel, merged.snr), ("UsefulTowel", 2, 4.5))
+      (merged.origin_name, merged.channel, merged.snr), ("FieldScout", 2, 4.5))
 
 # The RF log reports at heard-time; the decoded message follows on the next
 # poll seconds later. Complementary sightings across that gap must still fold.
@@ -81,13 +81,13 @@ _, distinct_new = state2.note_path(distinct)
 check("a different packet in the window stays separate", distinct_new, True)
 
 # ------------------------------------------------------------ analysis/reply
-state.upsert_node({"user": {"id": "!abababab", "longName": "UsefulTowel"},
-                   "position": {"latitude": 30.00, "longitude": -97.90}})
-state.upsert_node({"user": {"id": "!4c112233", "longName": "Hilltop Repeater"},
-                   "position": {"latitude": 30.20, "longitude": -97.90}})
-state.my_node_id = "!2935ec59"
-me = state.upsert_node({"user": {"id": "!2935ec59", "longName": "Tachyon Home"},
-                        "position": {"latitude": 30.34, "longitude": -97.92}})
+state.upsert_node({"user": {"id": "!abababab", "longName": "FieldScout"},
+                   "position": {"latitude": 0.00, "longitude": 0.10}})
+state.upsert_node({"user": {"id": "!a1112233", "longName": "Hilltop Repeater"},
+                   "position": {"latitude": 0.20, "longitude": 0.20}})
+state.my_node_id = "!c0decafe"
+me = state.upsert_node({"user": {"id": "!c0decafe", "longName": "Base Station"},
+                        "position": {"latitude": 0.30, "longitude": 0.30}})
 me.is_self = True
 
 analysis = analyze(state, merged)
@@ -97,14 +97,14 @@ check("route sums origin->hop->me",
 
 # A lone repeater is CONFIDENT even when chat nodes share its byte, and an
 # ambiguous or absurd hop must weaken the estimate, not inflate it.
-state.upsert_node({"user": {"id": "!4cffff01", "longName": "Chatty",
+state.upsert_node({"user": {"id": "!a1ffff01", "longName": "Chatty",
                             "role": "CHAT"}})
-state.upsert_node({"user": {"id": "!4c112233", "longName": "Hilltop Repeater",
+state.upsert_node({"user": {"id": "!a1112233", "longName": "Hilltop Repeater",
                             "role": "REPEATER"}})
 confident = analyze(state, merged)
 check("a lone repeater stays confident despite byte-sharing chat nodes",
       (confident.hops[0].ambiguous, confident.resolved), (False, 1))
-state.upsert_node({"user": {"id": "!4c445566", "longName": "Far Repeater",
+state.upsert_node({"user": {"id": "!a1445566", "longName": "Far Repeater",
                             "role": "REPEATER"},
                    "position": {"latitude": 48.0, "longitude": 2.0}})
 contested = analyze(state, merged)
@@ -123,13 +123,13 @@ check("an impossible leg yields no route instead of a continental one",
 check("a plausible origin keeps its direct figure",
       absurd.direct_km is not None and absurd.direct_km < 100, True)
 overseas = analyze(state, PathObservation(ts=NOW, kind="advert",
-                                          origin_id="!99000001", path="4c", hops=1))
+                                          origin_id="!99000001", path="a1", hops=1))
 check("an origin claiming to be an ocean away yields no direct figure",
       overseas.direct_km, None)
 
-reply = bot_reply(state, merged, "UsefulTowel")
+reply = bot_reply(state, merged, "FieldScout")
 check("reply speaks the pathbot dialect",
-      reply.startswith("@[UsefulTowel] [1h] 4c route: ~") and "direct: ~" in reply, True)
+      reply.startswith("@[FieldScout] [1h] a1 route: ~") and "direct: ~" in reply, True)
 check("zero hops answers 'direct'",
       bot_reply(state, PathObservation(ts=NOW, kind="channel", hops=0), "A"),
       "@[A] direct (no path)")
@@ -149,20 +149,20 @@ check("_split_path derives the same widths",
       (_split_path("9ef9500e", 2), _split_path("aabbcc", 3)),
       (["9ef9", "500e"], ["aa", "bb", "cc"]))
 
-# the exact 3-byte-hash path a live mesh produced (three hops, nine bytes)
-TRI_PATH = "81e6a7a30000bc20c2"
+# Synthetic three-hop, three-byte hashes (nine bytes total).
+TRI_PATH = "111111222222bcdeca"
 check("three-byte hashes split into six-char groups",
       PathObservation(ts=NOW, kind="channel", path=TRI_PATH, hops=3).hop_bytes(),
-      ["81e6a7", "a30000", "bc20c2"])
+      ["111111", "222222", "bcdeca"])
 check("_split_path handles 3-byte hashes",
-      _split_path(TRI_PATH, 3), ["81e6a7", "a30000", "bc20c2"])
+      _split_path(TRI_PATH, 3), ["111111", "222222", "bcdeca"])
 tri_state = MeshState()
 tri_state.protocol = "meshcore"
-tri_state.upsert_node({"user": {"id": "!bc20c203", "longName": "Santaluz Solar Repeater",
+tri_state.upsert_node({"user": {"id": "!bcdecafe", "longName": "Ridge Solar Repeater",
                                 "role": "REPEATER"}})
 tri = analyze(tri_state, PathObservation(ts=NOW, kind="channel", path=TRI_PATH, hops=3))
 check("a 3-byte hash resolves by its six-char prefix",
-      (tri.hops[2].label, tri.hops[2].ambiguous), ("Santaluz Solar Repeater", False))
+      (tri.hops[2].label, tri.hops[2].ambiguous), ("Ridge Solar Repeater", False))
 
 wide = obs_from_packet(Packet(ts=NOW, from_id="channel:2:anonymous", to_id="^all",
                               channel=2, portnum="TEXT_MESSAGE_APP", summary="x",
@@ -193,7 +193,7 @@ check("geojson has one line plus a point per positioned node",
       (kinds[0], kinds.count("Point")), ("LineString", len(map_analysis.points())))
 line = geo["features"][0]["geometry"]["coordinates"]
 check("coordinates are lon,lat in travel order",
-      (line[0], line[-1]), ([-97.9, 30.0], [-97.92, 30.34]))
+      (line[0], line[-1]), ([0.1, 0.0], [0.3, 0.3]))
 url = geojson_url(geo)
 check("map url is a base64 data URI (percent-encoding breaks geojson.io)",
       url.startswith("https://geojson.io/#data=data:application/json;base64,")
@@ -215,7 +215,7 @@ assert store.open(), store.error
 service = MeshService(store)
 service.state.protocol = "meshcore"
 service.state.channels = [(0, "Public"), (2, "#bot")]
-service.state.my_node_id = "!2935ec59"
+service.state.my_node_id = "!c0decafe"
 sent = []
 service.send_message = lambda text, dest, **kw: sent.append((text, dest)) or types.SimpleNamespace()
 
@@ -233,13 +233,13 @@ def channel_msg(text, ts=None, channel=2):
 service.receive_packet(Packet(ts=time.time(), from_id="channel:2:anonymous",
                               to_id="^all", channel=2, portnum="TEXT_MESSAGE_APP",
                               summary="x", raw={"type": "CHAN",
-                                                "text": "UsefulTowel: !path",
-                                                "path": "4c", "path_len": 1,
+                                                "text": "FieldScout: !path",
+                                                "path": "a1", "path_len": 1,
                                                 "SNR": 4.5}))
-bot.route(channel_msg("UsefulTowel: !path"))
+bot.route(channel_msg("FieldScout: !path"))
 check("one reply per request", len(sent), 1)
 check("reply is addressed and routed",
-      sent[0][0].startswith("@[UsefulTowel] [1h] 4c") and sent[0][1].index == 2, True)
+      sent[0][0].startswith("@[FieldScout] [1h] a1") and sent[0][1].index == 2, True)
 check("the map link rides along when it fits",
       sent[0][0].endswith(", https://da.gd/test1"), True)
 
@@ -264,9 +264,9 @@ check("shortener reply becomes the link", link, "https://da.gd/xyz9")
 check("the shortener is asked for a geojson.io url",
       "geojson.io" in urllib.parse.unquote(captured["url"]), True)
 
-bot.route(channel_msg("UsefulTowel: !path"))
+bot.route(channel_msg("FieldScout: !path"))
 check("cooldown blocks an immediate repeat", len(sent), 1)
-bot.route(channel_msg("B30-Automatica: @[UsefulTowel] [1h] 4c route: ~1mi"))
+bot.route(channel_msg("OtherPathBot: @[FieldScout] [1h] a1 route: ~1mi"))
 check("another bot's reply is never answered", len(sent), 1)
 bot.route(channel_msg("Someone: !path", channel=0))
 check("other channels are ignored", len(sent), 1)
@@ -330,7 +330,7 @@ ladder_bot.close()
 from meshtui.bot import TestBot
 
 service.state.channels = [(0, "Public"), (2, "#bot"), (10, "#testing")]
-service.state.my_node_name = "Tachyon Home"
+service.state.my_node_name = "Base Station"
 tester = TestBot(service, channel="#testing")
 tester.WAIT_STEPS = 1
 tester.WAIT_STEP_SECONDS = 0.0
@@ -342,34 +342,34 @@ def heard(name, hops, snr=None, path=""):
                                             hops=hops, snr=snr, channel=10))
 
 tester._map_link = lambda analysis: "https://da.gd/mapx"
-heard("Digitaino", 2, path="4c82")
-tester.route(channel_msg("Digitaino: testing fw", channel=10))
+heard("MobileOne", 2, path="a1b2")
+tester.route(channel_msg("MobileOne: testing fw", channel=10))
 check("a test receipt carries the pathbot's journey detail",
       sent[-1][0],
-      "@[Digitaino] 2 hops to Tachyon Home: 4c,82 (0/2), https://da.gd/mapx")
+      "@[MobileOne] 2 hops to Base Station: a1,b2 (0/2), https://da.gd/mapx")
 check("the receipt goes to the testing channel", sent[-1][1].index, 10)
 
-heard("BCW_A", 0, snr=9.2)
-tester.route(channel_msg("BCW_A: Test", channel=10))
+heard("PocketOne", 0, snr=9.2)
+tester.route(channel_msg("PocketOne: Test", channel=10))
 check("a direct test reports direct with its SNR",
-      sent[-1][0], "@[BCW_A] direct to Tachyon Home (+9.2dB)")
+      sent[-1][0], "@[PocketOne] direct to Base Station (+9.2dB)")
 
-located = TestBot(service, channel="#testing", location="Steiner Ranch")
+located = TestBot(service, channel="#testing", location="Field Site")
 located.WAIT_STEPS = 1
 located.WAIT_STEP_SECONDS = 0.0
 located._map_link = lambda analysis: None
-heard("Wanderer", 3)
-located.route(channel_msg("Wanderer: radio check", channel=10))
+heard("Roamer", 3)
+located.route(channel_msg("Roamer: radio check", channel=10))
 check("a configured place name rides in the receipt",
-      sent[-1][0], "@[Wanderer] 3 hops to Tachyon Home (Steiner Ranch)")
+      sent[-1][0], "@[Roamer] 3 hops to Base Station (Field Site)")
 located.close()
 
 before_len = len(sent)
-tester.route(channel_msg("Digitaino: thanks!", channel=10))
+tester.route(channel_msg("MobileOne: thanks!", channel=10))
 check("chatter gets no robot reply", len(sent), before_len)
-tester.route(channel_msg("CCS-pocket: @[BCW_A] 4 hops to Paige", channel=10))
+tester.route(channel_msg("OtherStation: @[PocketOne] 4 hops to RemoteBase", channel=10))
 check("another station's receipt gets no reply", len(sent), before_len)
-tester.route(channel_msg('X: 😀 reacted to "Test" @[BCW_A]', channel=10))
+tester.route(channel_msg('X: 😀 reacted to "Test" @[PocketOne]', channel=10))
 check("reactions get no reply", len(sent), before_len)
 tester.route(channel_msg("Someone: test", channel=2))
 check("tests on other channels are ignored", len(sent), before_len)
@@ -383,7 +383,7 @@ time.sleep(0.5)  # the store flushes on a background cadence
 persisted = store.recent_paths()
 check("observations are persisted", len(persisted) >= 1, True)
 check("a persisted row survives the round trip",
-      any((o.origin_name, o.path, o.hops) == ("UsefulTowel", "4c", 1)
+      any((o.origin_name, o.path, o.hops) == ("FieldScout", "a1", 1)
           for o in persisted), True)
 store.close()
 
@@ -393,7 +393,7 @@ gw = Gateway.__new__(Gateway)
 gw.service = service
 result = gw.handle_request({"command": "paths", "limit": 10})
 check("gateway serves path history",
-      result["ok"] and any(r["origin_name"] == "UsefulTowel"
+      result["ok"] and any(r["origin_name"] == "FieldScout"
                            for r in result["paths"]), True)
 
 print()

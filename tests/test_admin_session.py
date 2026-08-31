@@ -45,13 +45,13 @@ async def main():
     async with app.run_test(size=(150, 40)) as pilot:
         await asyncio.sleep(1.5)
         st = app.state; st.protocol = "meshcore"; app.link = Spy()
-        st.upsert_node({"num": 0xbc20c203, "user": {
-            "id": "!bc20c203", "longName": "Repeater", "shortName": "REP",
+        st.upsert_node({"num": 0xbcdecafe, "user": {
+            "id": "!bcdecafe", "longName": "Repeater", "shortName": "REP",
             "hwModel": "REPEATER", "role": "REPEATER"}})
         app.push_screen(AdminScreen(st, app.link))
         await pilot.pause(0.4)
         screen = app.screen
-        screen.target = "!bc20c203"
+        screen.target = "!bcdecafe"
 
         # 1) command before any login -> "not authenticated"
         await send(screen, pilot, "advert")
@@ -59,21 +59,21 @@ async def main():
 
         # 2) login sent, ack not yet back -> pending, command refused but distinctly
         await send(screen, pilot, "login letmein")
-        check("login was sent", app.link.logins, ["!bc20c203"])
-        check("target marked pending", "!bc20c203" in screen._login_pending, True)
-        check("not yet in admin_sessions", "!bc20c203" in st.admin_sessions, False)
+        check("login was sent", app.link.logins, ["!bcdecafe"])
+        check("target marked pending", "!bcdecafe" in screen._login_pending, True)
+        check("not yet in admin_sessions", "!bcdecafe" in st.admin_sessions, False)
         await send(screen, pilot, "advert")
         check("command held while ack pending", app.link.cmds, [])
 
         # 3) the ack lands (mc_login) -> pending clears, command works
-        app._handle("mc_login", ("!bc20c203", True))
+        app._handle("mc_login", ("!bcdecafe", True))
         await pilot.pause(0.2)
         screen._poll()   # the poll clears the pending flag on landed sessions
         await pilot.pause(0.1)
-        check("pending cleared after ack", "!bc20c203" in screen._login_pending, False)
-        check("authenticated after ack", "!bc20c203" in st.admin_sessions, True)
+        check("pending cleared after ack", "!bcdecafe" in screen._login_pending, False)
+        check("authenticated after ack", "!bcdecafe" in st.admin_sessions, True)
         await send(screen, pilot, "advert")
-        check("command sent after ack", app.link.cmds, [("!bc20c203", "advert")])
+        check("command sent after ack", app.link.cmds, [("!bcdecafe", "advert")])
 
     if failures:
         print(f"\nFAIL: {len(failures)}: {', '.join(failures)}")

@@ -25,7 +25,7 @@ def fmt_age(seconds: float | None) -> Text:
         style = "green" if seconds < 900 else "yellow"
         return Text(f"{int(seconds // 60)}m", style=style)
     if seconds < 86400:
-        return Text(f"{int(seconds // 3600)}h", style="red")
+        return Text(f"{int(seconds // 3600)}h", style="grey54")
     return Text(f"{int(seconds // 86400)}d", style="grey42")
 
 
@@ -144,8 +144,10 @@ class NodeTable(DataTable):
                 dot = Text("*", style="bold bright_cyan")
             elif age is not None and age < 900:
                 dot = Text("+", style="green")
+            elif age is not None and age < 3600:
+                dot = Text("~", style="yellow")
             else:
-                dot = Text("-", style="grey42")
+                dot = Text("·", style="grey35")
 
             name = Text(node.label.ljust(5)[:5], style="bold")
             name.append(" ")

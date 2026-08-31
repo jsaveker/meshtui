@@ -44,15 +44,15 @@ node = state.upsert_node({"user": {"id": "!aabbccdd"},
                           "position": {"latitude": 0.0, "longitude": 0.0}})
 check("Null Island is not a position", (node.lat, node.lon), (None, None))
 node = state.upsert_node({"user": {"id": "!aabbccdd"},
-                          "position": {"latitude": -97.9, "longitude": 30.3}})
+                          "position": {"latitude": -120.0, "longitude": 40.0}})
 check("swapped/corrupt coordinates are rejected", node.lat, None)
 node = state.upsert_node({"user": {"id": "!aabbccdd"},
-                          "position": {"latitude": 30.34, "longitude": -97.92}})
-check("a real position is stored", (node.lat, node.lon), (30.34, -97.92))
+                          "position": {"latitude": 10.3, "longitude": 20.3}})
+check("a real position is stored", (node.lat, node.lon), (10.3, 20.3))
 node = state.upsert_node({"user": {"id": "!aabbccdd"},
                           "position": {"latitude": 0.0, "longitude": 0.0}})
 check("a later sentinel does not erase a real position",
-      (node.lat, node.lon), (30.34, -97.92))
+      (node.lat, node.lon), (10.3, 20.3))
 
 service = MeshService(store=None)
 packet = Packet(ts=time.time(), from_id="!00000000", to_id="^all",

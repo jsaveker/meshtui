@@ -11,8 +11,9 @@ from typing import Any
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid
 from textual.css.query import NoMatches
+from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Input, Static
 
 from .model import (BROADCAST, ChannelRef, ChatMessage, DeliveryStatus, Packet,
@@ -22,6 +23,7 @@ from .meshcore_link import MeshCoreLink, probe_meshcore
 from .radio import (DemoLink, RadioLink, SerialLink, TCPLink,
                     find_serial_ports, protocol_payload_limit,
                     traceroute_hops)
+from .preferences import LAYOUTS, THEMES, OperatorPreferences
 from .state import ForeignChannel, RelayStat
 from .service import MeshService
 from .store import LAST_OBSERVER, Store, state_ts_key
@@ -35,8 +37,12 @@ from .widgets.help import HelpScreen
 from .widgets.inspect import PacketInspector
 from .widgets.mesh_map import MapScreen
 from .widgets.nodes import NodeTable
+from .widgets.operator import PacketWorkbench, RoutePane
+from .widgets.palette import CommandPalette
 from .widgets.paths import PathScreen
 from .widgets.relays import RelayScreen
+from .widgets.rooms import RoomScreen
+from .widgets.scope import ScopeScreen
 from .widgets.sensors import SensorScreen
 from .widgets.packets import PacketFeed
 from .widgets.stats import StatsPane, fmt_duration
@@ -45,6 +51,27 @@ FEED_RESTORE_ROWS = 400
 
 # Verbs whose argument is a credential and must never be written down.
 SECRET_VERBS = ("login", "password", "passwd", "pass")
+
+OPERATOR_THEMES = (
+    Theme(
+        name="phosphor", primary="#28f0a0", secondary="#20b8a0",
+        accent="#5fffd0", warning="#ffd75f", error="#ff5f5f", success="#28f0a0",
+        foreground="#c8ffe8", background="#020907", surface="#06110d",
+        panel="#0a1a14", boost="#103326", dark=True,
+    ),
+    Theme(
+        name="night-vision", primary="#72ff45", secondary="#34b82e",
+        accent="#b0ff78", warning="#f5e663", error="#ff624f", success="#72ff45",
+        foreground="#d7ffc8", background="#010600", surface="#071006",
+        panel="#0c1b09", boost="#153510", dark=True,
+    ),
+    Theme(
+        name="high-contrast", primary="#ffffff", secondary="#00e5ff",
+        accent="#ffff00", warning="#ffff00", error="#ff3b30", success="#4cff4c",
+        foreground="#ffffff", background="#000000", surface="#000000",
+        panel="#101010", boost="#242424", dark=True, text_alpha=1.0,
+    ),
+)
 
 
 def redact_command(text: str) -> str:
@@ -79,7 +106,7 @@ class MeshTUI(App[None]):
     BINDINGS = [
         Binding("q", "quit", "quit"),
         Binding("question_mark,f1", "help", "help", key_display="?"),
-        Binding("slash", "focus_input", "chat", key_display="/"),
+        Binding("slash", "command_palette", "command", key_display="/"),
         Binding("z", "expand_chat", "expand chat"),
         Binding("p", "toggle_pause", "pause feed"),
         Binding("f", "cycle_filter", "filter"),
@@ -91,11 +118,14 @@ class MeshTUI(App[None]):
         Binding("v", "show_paths", "paths"),
         Binding("w", "show_sensors", "sensors"),
         Binding("x", "show_admin", "remote admin"),
+        Binding("o", "show_rooms", "rooms"),
         Binding("c", "show_channels", "channels"),
         Binding("A", "fix_autoadd", "auto-add on", show=False),
         Binding("V", "send_advert", "advert", show=False),
         Binding("t", "trace_selected", "trace"),
         Binding("i", "inspect_packet", "inspect", show=False),
+        Binding("l", "cycle_layout", "layout", show=False),
+        Binding("T", "cycle_theme", "theme", show=False),
         Binding("ctrl+l", "clear_feed", "clear feed", show=False),
         Binding("tab", "focus_next", "switch pane"),
     ]
@@ -103,8 +133,11 @@ class MeshTUI(App[None]):
     def __init__(self, port: str | None = None, demo: bool = False,
                  store: Store | None = None, restore_limit: int = 3000,
                  host: str | None = None, protocol: str = "auto",
-                 gateway: str | None = None) -> None:
+                 gateway: str | None = None,
+                 preferences_path: str | None = None) -> None:
         super().__init__()
+        for theme in OPERATOR_THEMES:
+            self.register_theme(theme)
         self.service = MeshService(store)
         self.state = self.service.state
         if protocol != "auto":
@@ -116,6 +149,8 @@ class MeshTUI(App[None]):
         self.demo = demo
         self.store = store
         self.restore_limit = restore_limit
+        self.preferences = OperatorPreferences(preferences_path)
+        self.layout_name = "balanced"
         self._link: RadioLink | None = None
         self._status_note: tuple[str, str] = ("starting...", "grey70")
         self._note_until: float = 0.0
@@ -133,23 +168,28 @@ class MeshTUI(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(id="status")
-        with Horizontal(id="main"):
-            with Vertical(id="left"):
-                yield NodeTable(id="nodes")
-                yield StatsPane(id="stats")
-            with Vertical(id="right"):
-                yield PacketFeed(id="packets")
-                yield ChatPane(id="chat")
+        with Grid(id="workspace"):
+            yield NodeTable(id="nodes")
+            yield ChatPane(id="chat")
+            yield PacketWorkbench(id="packet-workbench")
+            yield RoutePane(self.state, id="route-pane")
+        # Kept mounted as a compact aggregate source while its information is
+        # folded into the operator panes. Existing integrations can still
+        # query it, but it no longer consumes one of the four workspace cells.
+        yield StatsPane(id="stats")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one(NodeTable).border_title = "nodes"
         self.query_one(StatsPane).border_title = "stats"
         self.query_one(PacketFeed).border_title = "packets - all"
+        self.query_one(PacketWorkbench).border_title = "packet + hex"
+        self.query_one(RoutePane).border_title = "selected route"
         chat = self.query_one(ChatPane)
         chat.set_title("chat")
         # Explicit MeshCore mode must be safe even before the radio connects.
         chat.max_bytes = protocol_payload_limit(self.state.protocol)
+        self._apply_preferences()
 
         self._restore()
         self.set_interval(1.0, self._tick)
@@ -537,6 +577,7 @@ class MeshTUI(App[None]):
             self.record_admin(node_id, f"telemetry: {data}")
         elif kind == "mc_neighbours":
             node_id, neighbours = payload
+            self.state.note_neighbours(node_id, neighbours)
             self.record_admin(node_id, f"neighbours ({len(neighbours)}):")
             for entry in neighbours:
                 who = self.state.node_name(f"!{str(entry.get('pubkey', ''))[:8]}")
@@ -546,8 +587,11 @@ class MeshTUI(App[None]):
                     f"  {who:24} "
                     f"{f'{snr:+.1f}dB' if snr is not None else '?':>8}  "
                     f"{f'{ago}s ago' if ago is not None else ''}"))
+        elif kind == "mc_flood_scope":
+            self.state.radio_info.update(payload)
         elif kind == "mc_radio_stats":
             self.state.radio_info.update(payload)
+            self.state.stats.record_radio_airtime(payload)
         elif kind == "status":
             self.note(str(payload))
         elif kind == "error":
@@ -675,6 +719,7 @@ class MeshTUI(App[None]):
             )
         self._restore_for_observer()
         self.query_one(ChatPane).set_channels(self.state)
+        self._apply_preferences()
         self.note("connected", "green")
 
     # ------------------------------------------------------------ refresh
@@ -716,6 +761,10 @@ class MeshTUI(App[None]):
         radio = state.radio_info
         if radio.get("freq"):
             left.append(f"  {radio['freq']}MHz sf{radio.get('sf')}", style="grey42")
+        air = state.stats.airtime_last_hour()
+        if air is not None:
+            style = "bright_green" if air < 10 else ("yellow" if air < 25 else "red")
+            left.append(f"  air 1h {air:.1f}%", style=style)
 
         if self._status_note and time.time() < self._note_until:
             text, style = self._status_note
@@ -727,6 +776,203 @@ class MeshTUI(App[None]):
 
     def action_focus_input(self) -> None:
         self._open_overlay(focus_input=True)
+
+    def action_command_palette(self) -> None:
+        self.push_screen(CommandPalette())
+
+    def _apply_preferences(self) -> None:
+        values = self.preferences.get(self.state.protocol)
+        self._set_layout(values["layout"], persist=False)
+        self._set_theme(values["theme"], persist=False)
+
+    def _set_layout(self, name: str, *, persist: bool = True) -> bool:
+        if name not in LAYOUTS:
+            return False
+        workspace = self.query_one("#workspace", Grid)
+        for known in LAYOUTS:
+            workspace.remove_class(f"layout-{known}")
+        workspace.add_class(f"layout-{name}")
+        self.layout_name = name
+        if persist:
+            self.preferences.update(self.state.protocol, layout=name)
+        self.note(f"layout: {name}", "bright_cyan")
+        return True
+
+    def _set_theme(self, name: str, *, persist: bool = True) -> bool:
+        if name not in THEMES:
+            return False
+        self.theme = name
+        if persist:
+            self.preferences.update(self.state.protocol, theme=name)
+        self.note(f"theme: {name}", "bright_cyan")
+        return True
+
+    def action_cycle_layout(self) -> None:
+        current = LAYOUTS.index(self.layout_name) if self.layout_name in LAYOUTS else 0
+        self._set_layout(LAYOUTS[(current + 1) % len(LAYOUTS)])
+
+    def action_cycle_theme(self) -> None:
+        current = THEMES.index(self.theme) if self.theme in THEMES else 0
+        self._set_theme(THEMES[(current + 1) % len(THEMES)])
+
+    def execute_palette(self, line: str) -> bool:
+        """Execute one palette command. False keeps the palette open."""
+        parts = line.strip().split(maxsplit=2)
+        if not parts:
+            return False
+        command = parts[0].casefold()
+
+        if command in ("node", "jump"):
+            if len(parts) < 2:
+                self.note("usage: node <name>", "yellow")
+                return False
+            query = line.split(maxsplit=1)[1].casefold()
+            table = self.query_one(NodeTable)
+            table.render_state(self.state)
+            matches = [i for i, node_id in enumerate(table._row_ids)
+                       if query in node_id.casefold()
+                       or query in self.state.node_name(node_id).casefold()
+                       or query in (self.state.nodes[node_id].long_name or "").casefold()]
+            if not matches:
+                self.note(f"unknown node: {query}", "yellow")
+                return False
+            table.move_cursor(row=matches[0])
+            table.focus()
+            self.note(f"selected {self.state.node_name(table._row_ids[matches[0]])}", "green")
+            return True
+
+        if command == "filter":
+            feed = self.query_one(PacketFeed)
+            if len(parts) < 2:
+                self.note("filters: all, no rf log, chatty, text only", "yellow")
+                return False
+            name = feed.set_filter(line.split(maxsplit=1)[1], self.state)
+            if name is None:
+                self.note("unknown or ambiguous packet filter", "yellow")
+                return False
+            feed.border_title = f"packets - {name}"
+            feed.focus()
+            return True
+
+        if command == "watch":
+            if len(parts) < 2:
+                self.note("usage: watch proto:mc hop>=3 snr<5 chan:#public", "yellow")
+                return False
+            expression = line.split(maxsplit=1)[1]
+            try:
+                name = self.query_one(PacketFeed).set_watch(expression, self.state)
+            except ValueError as exc:
+                self.note(str(exc), "yellow")
+                return False
+            self.query_one(PacketFeed).border_title = f"packets - {name}"
+            self.query_one(PacketFeed).focus()
+            return True
+
+        if command == "view":
+            args = line.split(maxsplit=3)
+            if len(args) >= 4 and args[1].casefold() == "save":
+                name, expression = args[2], args[3]
+                try:
+                    self.query_one(PacketFeed).set_watch(expression, self.state, name=name)
+                except ValueError as exc:
+                    self.note(str(exc), "yellow")
+                    return False
+                self.preferences.save_view(self.state.protocol, name, expression)
+                self.query_one(PacketFeed).border_title = f"packets - {name}"
+                self.note(f"saved view: {name}", "green")
+                return True
+            if len(args) >= 3 and args[1].casefold() == "delete":
+                if not self.preferences.delete_view(self.state.protocol, args[2]):
+                    self.note(f"unknown saved view: {args[2]}", "yellow")
+                    return False
+                self.note(f"deleted view: {args[2]}", "green")
+                return True
+            if len(args) < 2 or args[1].casefold() == "list":
+                names = ", ".join(sorted(self.preferences.views(self.state.protocol))) or "none"
+                self.note(f"saved views: {names}", "grey70")
+                return False
+            name = args[1]
+            expression = self.preferences.views(self.state.protocol).get(name)
+            if expression is None:
+                self.note(f"unknown saved view: {name}", "yellow")
+                return False
+            self.query_one(PacketFeed).set_watch(expression, self.state, name=name)
+            self.query_one(PacketFeed).border_title = f"packets - {name}"
+            self.query_one(PacketFeed).focus()
+            return True
+
+        if command == "send":
+            if len(parts) < 3:
+                self.note("usage: send <node|#channel> <text>", "yellow")
+                return False
+            target, text = parts[1], parts[2]
+            if target.startswith("#"):
+                wanted = target[1:].casefold()
+                channels = [(index, name) for index, name in self.state.channel_pairs()
+                            if str(index) == wanted or name.lstrip("#").casefold() == wanted]
+                if len(channels) != 1:
+                    self.note(f"unknown channel: {target}", "yellow")
+                    return False
+                return self._send(text, BROADCAST, channels[0][0])
+            node = self.state.resolve(target)
+            if node is None:
+                self.note(f"unknown node: {target}", "yellow")
+                return False
+            self.query_one(ChatPane).focus_dm(node.node_id, self.state)
+            return self._send(text, node.node_id, 0)
+
+        if command == "trace":
+            if len(parts) < 2:
+                self.note("usage: trace <node> [hops]", "yellow")
+                return False
+            args = line.split()
+            node = self.state.resolve(args[1])
+            if node is None:
+                self.note(f"unknown node: {args[1]}", "yellow")
+                return False
+            try:
+                hops = max(1, min(7, int(args[2]))) if len(args) > 2 else 5
+            except ValueError:
+                self.note("hops must be a number 1-7", "yellow")
+                return False
+            self._trace(node.node_id, hops)
+            return True
+
+        if command in ("login", "admin"):
+            if self.state.protocol != "meshcore":
+                self.note("remote admin is a MeshCore feature", "yellow")
+                return False
+            if len(parts) < 2:
+                self.note("usage: login <node>", "yellow")
+                return False
+            node = self.state.resolve(line.split(maxsplit=1)[1])
+            if node is None:
+                self.note("unknown admin node", "yellow")
+                return False
+            self.push_screen(AdminScreen(self.state, self.link, target=node.node_id))
+            return True
+
+        if command == "scope":
+            if self.state.protocol != "meshcore":
+                self.note("flood scopes are a MeshCore feature", "yellow")
+                return False
+            self.push_screen(ScopeScreen(self.state, self.link))
+            return True
+
+        if command in ("room", "rooms"):
+            if self.state.protocol != "meshcore":
+                self.note("room servers are a MeshCore feature", "yellow")
+                return False
+            self.push_screen(RoomScreen(self.state, self.link, self))
+            return True
+
+        if command == "layout":
+            return len(parts) >= 2 and self._set_layout(parts[1].casefold())
+        if command == "theme":
+            return len(parts) >= 2 and self._set_theme(parts[1].casefold())
+
+        self.note(f"unknown palette command: {command}", "yellow")
+        return False
 
     def _open_overlay(self, focus_input: bool = False) -> None:
         if isinstance(self.screen, ChatScreen):
@@ -770,7 +1016,8 @@ class MeshTUI(App[None]):
         self.query_one(PacketFeed).clear_feed()
 
     def action_inspect_packet(self) -> None:
-        packet = self.query_one(PacketFeed).selected_packet()
+        feed = self.query_one(PacketFeed)
+        packet = feed.selected_packet() or feed.latest_packet()
         if packet is None:
             self.note("no packet selected", "yellow")
             return
@@ -888,7 +1135,7 @@ class MeshTUI(App[None]):
             return
         if node.is_self or node.node_id == self.state.my_node_id:
             # The cursor starts on our own row, and similarly-named nodes
-            # (Tachyon Home vs Tachyon Mobile) make this an easy misfire that
+            # (Field Base vs Field Mobile) make this an easy misfire that
             # used to end in a cryptic 3-attempt delivery failure.
             self.note("that's this radio - pick the node you want to DM", "yellow")
             return
@@ -935,6 +1182,12 @@ class MeshTUI(App[None]):
         elif isinstance(event.data_table, NodeTable):
             self.action_node_detail()
 
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if isinstance(event.data_table, PacketFeed):
+            packet = event.data_table.selected_packet()
+            self.query_one(PacketWorkbench).show_packet(packet, self.state)
+            self.query_one(RoutePane).show_packet(packet)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Only ever transmit what was typed into the chat box. Other screens
         # have their own inputs whose submissions bubble up here, and treating
@@ -949,11 +1202,29 @@ class MeshTUI(App[None]):
     def max_payload(self) -> int:
         return self.query_one(ChatPane).max_bytes
 
-    def send_from_overlay(self, text: str) -> bool:
+    def send_from_overlay(self, text: str, route_mode: str = "auto",
+                          path_hash_size: int | None = None) -> bool:
         """Send path for the pop-out overlay's input."""
-        return self._submit_chat(text)
+        return self._submit_chat(text, route_mode=route_mode,
+                                 path_hash_size=path_hash_size)
 
-    def _submit_chat(self, raw: str) -> bool:
+    def send_to_room(self, node_id: str, text: str) -> bool:
+        """Post through the same durable DM path used by ordinary chat."""
+        node = self.state.nodes.get(node_id)
+        if self.state.protocol != "meshcore" or node is None or node.role != "ROOM":
+            self.note("selected contact is not a MeshCore room server", "yellow")
+            return False
+        self.query_one(ChatPane).focus_dm(node_id, self.state)
+        return self._send(text, node_id, 0)
+
+    def action_show_rooms(self) -> None:
+        if self.state.protocol != "meshcore":
+            self.note("room servers are a MeshCore feature", "yellow")
+            return
+        self.push_screen(RoomScreen(self.state, self.link, self))
+
+    def _submit_chat(self, raw: str, route_mode: str = "auto",
+                     path_hash_size: int | None = None) -> bool:
         """Handle a line of chat input. Returns True if it was consumed.
 
         The single entry point for both the corner input and the overlay, so
@@ -988,7 +1259,9 @@ class MeshTUI(App[None]):
             return False
         target = active[1]
         return self._send(text, target if kind == "dm" else BROADCAST,
-                          0 if kind == "dm" else int(target))  # type: ignore[arg-type]
+                          0 if kind == "dm" else int(target),
+                          route_mode=route_mode,
+                          path_hash_size=path_hash_size)  # type: ignore[arg-type]
 
     def active_chat_target(self) -> tuple[str, Any]:
         return self.query_one(ChatPane).active_target()
@@ -1043,10 +1316,9 @@ class MeshTUI(App[None]):
         """Match the longest leading node name in `remainder`.
 
         Returns (node, rest-of-string, problem). Multi-word names work
-        ('/dm Tachyon Mobile hi'), our own radio is never a target, and an
+        ('/dm Field Mobile hi'), our own radio is never a target, and an
         ambiguous token is reported with ids instead of silently taking the
-        first match - which once DMed the user's own radio because two nodes
-        shared the short name 'Tach'. When several nodes share a name, one
+        first match. When several nodes share a name, one
         heard recently beats ghosts not heard in a week.
         """
         tokens = remainder.split()
@@ -1073,12 +1345,15 @@ class MeshTUI(App[None]):
         first = tokens[0] if tokens else ""
         return None, "", f"unknown node: {first}"
 
-    def _send(self, text: str, dest: str, channel: int) -> bool:
+    def _send(self, text: str, dest: str, channel: int,
+              route_mode: str = "auto",
+              path_hash_size: int | None = None) -> bool:
         if self.protocol == "auto" and not self.state.connected:
             self.note("protocol detection has not finished; use --protocol for offline queueing",
                       "yellow")
             return False
-        destination = (PeerRef(self.state.protocol, dest) if dest != BROADCAST
+        destination = (PeerRef(self.state.protocol, dest, None,
+                               route_mode, path_hash_size) if dest != BROADCAST
                        else ChannelRef(self.state.protocol, channel,
                                        self.state.channel_name(channel)))
         receipt = self.service.send_message(text, destination)

@@ -202,6 +202,17 @@ class MapView(Widget):
                     continue
                 x, y = to_px(node)
                 canvas.line(me_px[0], me_px[1], x, y, "grey27")
+            # Authenticated repeater neighbor-table pulls describe links that
+            # do not involve us. Merge those observations into this same graph.
+            for edge in self.state.neighbor_edges.values():
+                source = self.state.nodes.get(edge.source_id)
+                target = self.state.nodes.get(edge.target_id)
+                if source is None or target is None \
+                        or not source.has_position or not target.has_position:
+                    continue
+                x0, y0 = to_px(source)
+                x1, y1 = to_px(target)
+                canvas.line(x0, y0, x1, y1, snr_style(edge.snr))
 
         # Movement trails, drawn under the node marks.
         if self.show_tracks:
@@ -266,6 +277,8 @@ class MapView(Widget):
             f"span {fmt_km(self.span_km)}   furthest {fmt_km(far)}   "
             f"colour: {COLOR_MODES[self.color_mode]}"
             + (f"   {moving} moving" if (moving := sum(1 for n in nodes if n.moving)) else "")
+            + (f"   {len(self.state.neighbor_edges)} neighbour links"
+               if self.state.neighbor_edges else "")
             + ("" if self.center is None else "   [panned]")
         )
         return canvas.render()

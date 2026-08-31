@@ -28,22 +28,22 @@ class FakeLink:
 
 svc = MeshService(store=None)
 svc.attach_link(FakeLink())
-# a repeater contact whose key starts bc -> node_id !bc20c203
-svc.state.upsert_node({"num": 0xbc20c203, "user": {
-    "id": "!bc20c203", "longName": "Santaluz Solar Repeater",
-    "shortName": "SSR", "hwModel": "REPEATER", "role": "REPEATER"}})
-svc.state.my_node_id = "!2935ec59"
+# a synthetic repeater contact whose key starts bc -> node_id !bcdecafe
+svc.state.upsert_node({"num": 0xbcdecafe, "user": {
+    "id": "!bcdecafe", "longName": "Ridge Solar Repeater",
+    "shortName": "RSG", "hwModel": "REPEATER", "role": "REPEATER"}})
+svc.state.my_node_id = "!c0decafe"
 
 now = time.time()
 # our just-sent channel-0 message
-mine = ChatMessage(ts=now, from_id="!2935ec59", from_name="you", to_id="^all",
+mine = ChatMessage(ts=now, from_id="!c0decafe", from_name="you", to_id="^all",
                    text="storm inbound", channel=0, outgoing=True,
                    message_id="m1")
 svc.state.add_chat(mine)
 
 print("first repeat, matched by channel + time window")
 svc.note_repeat({"chan_hash": "11", "pkt_hash": 111, "path": ["bc"], "ts": now + 1})
-check("repeater resolved to a name", "Santaluz Solar Repeater" in mine.repeated_by, True)
+check("repeater resolved to a name", "Ridge Solar Repeater" in mine.repeated_by, True)
 check("pkt hash anchored", mine.repeat_pkt, 111)
 
 print("\nsecond repeat, same packet, another repeater -> accumulates")
@@ -59,7 +59,7 @@ svc.note_repeat({"chan_hash": "11", "pkt_hash": 111, "path": ["9f"], "ts": now +
 check("unknown byte labelled", "0x9f" in mine.repeated_by, True)
 
 print("\na repeat on a different channel is not attributed to this message")
-other = ChatMessage(ts=now, from_id="!2935ec59", from_name="you", to_id="^all",
+other = ChatMessage(ts=now, from_id="!c0decafe", from_name="you", to_id="^all",
                     text="ops msg", channel=5, outgoing=True, message_id="m2")
 svc.state.add_chat(other)
 svc.note_repeat({"chan_hash": "77", "pkt_hash": 222, "path": ["bc"], "ts": now + 2})
@@ -72,7 +72,7 @@ check("foreign packet not attached to m1", 555 in svc._repeat_pkt_to_message, Fa
 check("m1 repeaters unchanged by foreign packet", len(mine.repeated_by), 3)
 
 print("\na stale repeat (past the window, unknown packet) is ignored")
-old = ChatMessage(ts=now - 600, from_id="!2935ec59", from_name="you", to_id="^all",
+old = ChatMessage(ts=now - 600, from_id="!c0decafe", from_name="you", to_id="^all",
                   text="ancient", channel=0, outgoing=True, message_id="m3")
 svc.state.add_chat(old)
 r = svc.note_repeat({"chan_hash": "11", "pkt_hash": 999, "path": ["bc"], "ts": now + 700})

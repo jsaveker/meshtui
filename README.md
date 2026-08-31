@@ -37,11 +37,11 @@ protocol's distinctive capabilities visible.
 
 | | Capability |
 |---|---|
-| **Observe** | Follow decoded packets, SNR, hop count, node activity, telemetry, sensors, movement, and a braille-rendered map. |
-| **Communicate** | Read every channel, open focused conversations, send direct messages, complete `@mentions` with Tab, and see delivery or repeat status. |
-| **Understand routes** | Explore MeshCore path observations, Meshtastic traceroutes, relay dependency, and link history instead of guessing how traffic moved. |
-| **Operate remotely** | Authenticate to MeshCore repeaters and room servers over RF, run console commands, and retain a redacted session log. |
-| **Automate** | Leave one gateway attached to the radio, queue durable messages from local scripts, and opt in to bounded path, test, or AI bots. |
+| **Observe** | Work in four panes—nodes, chat, packet hex, and route/map—with last-heard heat, SNR sparklines, and rolling one-hour airtime. |
+| **Communicate** | Preview wire bytes and route intent before sending, then follow queued → radio sent → repeats → ACK like a mail client. |
+| **Understand routes** | Select traffic to see its ASCII/braille hop chain, map polyline, prefix candidates, round-trip trace, and per-hop SNR. |
+| **Operate remotely** | Authenticate to MeshCore repeaters, merge neighbour tables into the graph, browse room catch-up, and edit flood scope explicitly. |
+| **Automate** | Keep one gateway on the radio and fan it out to TUI/web clients, MQTT, local plugins, notifications, bots, and teaching replays. |
 | **Investigate** | Inspect decoded fields and hex, retain SQLite history, export CSV, and audit Meshtastic traffic against upstream's published channel keys. |
 
 ## Protocol support
@@ -58,7 +58,9 @@ can always choose explicitly with `--protocol meshcore` or
 | Observed path explorer and route bot | ✓ | — |
 | Message repeat attribution | ✓ | — |
 | Remote repeater and room-server administration | ✓ | — |
-| Traceroute, relay dependency, and mesh health | — | ✓ |
+| Traceroute and per-hop SNR | ✓ | ✓ |
+| Room post catch-up and flood-scope control | ✓ | — |
+| Relay dependency and mesh health | ✓ | ✓ |
 | Channel security audit | — | ✓ |
 
 Protocol-specific features stay protocol-specific. MeshTUI does not pretend that a
@@ -81,18 +83,60 @@ Common commands include `ver`, `clock`, `advert`, `reboot`, `get freq`, `get tx`
 `get repeat`, `set repeat on|off`, `neighbors`, and `log start|stop`. The repeater
 firmware remains the authority for the commands a particular build accepts.
 
+Press `o` for the room-server browser. Its password input is masked and never
+persisted. Login asks the room to push its unseen retained posts; catch-up is
+therefore asynchronous RF traffic rather than an HTTP-style fetch. Signed room
+posts remain grouped under the room thread while showing the original author's
+resolved public-key prefix. Posts use the same durable outbox as direct messages.
+
+Run `scope` from the command palette to inspect the radio default, apply a
+session-only `#scope`, save a persistent default, or explicitly force unscoped
+flooding. These are separate controls because blank means “use the radio
+default,” while `*` deliberately bypasses scope isolation. Flood-routed messages
+carry a visible `F` badge.
+
+## Operator cockpit
+
+The main screen is always a four-pane workspace: nodes, chat, packet/hex, and
+route/map. `l` cycles balanced, radio, chat, and route-biased layouts; `T` cycles
+phosphor, night-vision, and high-contrast themes. Both choices are stored per
+protocol in `~/.config/meshtui/preferences.json`, so a MeshCore deck and a
+Meshtastic station can keep different working arrangements.
+
+Press `/` for the command palette. Useful commands include:
+
+```text
+node Hilltop
+filter text only
+watch proto:mc hop>=3 snr<5 chan:#public
+view save marginal proto:mc hop>=3 snr<5
+view marginal
+send #public check in
+trace Walker 5
+login RidgeRepeater
+rooms
+scope
+layout route
+theme high-contrast
+```
+
+Watch expressions are parsed without `eval`; supported fields are `proto`,
+`hop`, `snr`, `chan`, `from`, `to`, `type`, and `text`. Named views, layouts,
+and themes remain local operator preferences and are scoped by protocol.
+
 ## Chat that behaves like a chat client
 
 [![MeshTUI focused chat view showing synthetic MeshCore channel conversation and repeat status](docs/assets/meshtui-chat.png)](docs/assets/meshtui-chat.png)
 
-The dashboard shows an all-channel activity stream. Press `z` for the focused chat
-view or `/` to jump directly to the composer. MeshTUI provides:
+The dashboard shows an all-channel activity stream. Press `z` for focused chat;
+`/` opens the operator command palette. MeshTUI provides:
 
 - separate channel and direct-message conversations;
 - unread counts and channel navigation;
 - Tab-completed `@[Name]` mentions, including emoji-led names;
 - a live UTF-8 byte budget for the active protocol;
-- direct-message acknowledgement state; and
+- a split wire preview with hops, path-hash width, and auto/flood/direct mode;
+- a queued → sent → heard-repeaters → ACK receipt timeline; and
 - MeshCore repeater attribution on sent channel messages.
 
 The composer refuses an over-limit payload without discarding the draft. The
@@ -209,6 +253,8 @@ flowchart LR
     T[meshtui --gateway] <--> G
     C[meshtui send] --> G
     B[Opt-in bots] --> G
+    G --> M[MQTT broker]
+    M --> H[Home Assistant]
 ```
 
 ```sh
@@ -221,15 +267,21 @@ meshtui --gateway
 
 # Send from a local script without opening the serial device.
 meshtui send channel --channel '#bots' 'backup completed; raccoon uninvolved'
-meshtui send dm --to '!2935ec59' 'water sensor is dry again'
+meshtui send dm --to '!c0decafe' 'water sensor is dry again'
 
 # Exit successfully only after the direct-message mesh ACK arrives.
-meshtui send dm --to '!2935ec59' --wait 300 'field test 0042'
+meshtui send dm --to '!c0decafe' --wait 300 'field test 0042'
 ```
 
 One logical outgoing message is written before transmission. Failed connections
 leave it queued, retries retain the same message ID, and process restarts do not
 erase the outbox.
+
+The owner-only Unix socket supports multiple simultaneous subscribers. Every TUI,
+the browser companion, and local automation sees a consistent snapshot followed
+by live events, while only the gateway opens the serial/BLE/TCP radio and writes
+SQLite. Trace, room/admin, neighbour, and flood-scope operations are proxied
+through that same owner rather than reopening the device.
 
 Delivery states have deliberately narrow meanings:
 
@@ -245,6 +297,157 @@ received one. Run the gateway under your service manager for a days-long station
 with a fixed database and socket path and serial-device permission. Only one
 process can own a radio at a time.
 
+### Read-only web companion
+
+`meshtui serve` subscribes to the gateway socket and serves the same nodes,
+recent chat, health, and route polylines without opening the radio or database:
+
+```sh
+# Safe local default.
+meshtui serve --gateway /tmp/meshtui-$(id -u).sock
+
+# Deliberately expose it to the local network.
+meshtui serve --listen 0.0.0.0 --port 8765
+```
+
+The companion has no send or admin endpoints. It binds to `127.0.0.1` by
+default, uses no CDN, and returns a restrictive content-security policy. A LAN
+bind is still a disclosure decision: chat, node identifiers, and positions can
+be sensitive, so place authentication/reverse-proxy controls in front of it on
+an untrusted network.
+
+### Trusted local plugins
+
+Plugins load only when the gateway is explicitly started with `--plugins`
+(default directory `~/.config/meshtui/plugins/`) or `--plugins DIR`. Each Python
+file may expose `setup(api)` and use three small primitives:
+
+```python
+def setup(api):
+    @api.on_packet
+    def observe(packet):
+        print(packet.from_id, packet.portnum, packet.snr)
+
+    @api.on_message
+    def reply(message):
+        if message.text == "!local-ping":
+            api.send("pong", to=message.from_id)
+```
+
+`api.send(text, to=...)` and `api.send(text, channel=...)` enter the durable
+gateway outbox. Hook exceptions are isolated and reported by `gateway-status`.
+Plugins are fully trusted local code—not a sandbox—and nothing in a cloned
+repository is auto-loaded.
+
+### Teaching replay
+
+A second read-only “ghost” gateway can replay a bounded time window without
+touching the live radio or writing back into the source:
+
+```sh
+meshtui replay --db ~/.local/share/meshtui/mesh.db \
+  --from 1788200000 --to 1788203600 --speed 10
+
+meshtui replay --pcap field-capture.pcapng --protocol meshcore --speed 4
+
+# In another terminal:
+meshtui --gateway /tmp/meshtui-$(id -u)-ghost.sock
+```
+
+Classic PCAP and PCAPNG are supported. Meshtastic replay accepts raw
+`MeshPacket`, `FromRadio`, serial-framed, and UDP/TCP payload captures. MeshCore
+replay accepts raw RF frames; specify `--protocol meshcore` when the link-layer
+capture is otherwise ambiguous. Capture timestamps are preserved relatively and
+rebased to replay time. The ghost rejects every send.
+
+### Notifications
+
+Named-node reappearance and trace failures can fan out to the local desktop,
+an ntfy server, and/or the configured MQTT broker:
+
+```sh
+meshtui gateway --protocol meshcore --port /dev/ttyUSB0 \
+  --notify-node 'Walker*' --notify-node '!aabbccdd' \
+  --notify-trace-fail --notify-desktop \
+  --ntfy-topic mesh-ops --ntfy-token-env MESHTUI_NTFY_TOKEN
+```
+
+Rules are disabled by default, node names accept shell-style wildcards, and the
+active window prevents repeat notifications for a node that never actually
+left. Delivery runs off the radio callback thread. An MQTT-configured gateway
+also emits these as non-retained generic events for Home Assistant automations.
+
+### Home Assistant telemetry over MQTT
+
+The gateway can publish the telemetry it already stores as retained MQTT state
+and Home Assistant discovery documents. This is an optional extra; the public
+project contains no broker address, credentials, private node IDs, or household
+entity names.
+
+```sh
+# Install the optional broker client.
+uv sync --extra mqtt
+
+# Keep the password in a protected service environment. For a one-off Bash
+# session, prompt without putting it in shell history or the process command.
+read -rsp 'MQTT password: ' MESHTUI_MQTT_PASSWORD && echo
+export MESHTUI_MQTT_PASSWORD
+
+meshtui gateway --protocol meshcore --port /dev/ttyUSB0 \
+  --mqtt-host mqtt.example.lan \
+  --mqtt-username meshtui \
+  --mqtt-password-env MESHTUI_MQTT_PASSWORD \
+  --mqtt-gateway-id field-station
+```
+
+Once Home Assistant's MQTT integration is connected to that broker, its default
+`homeassistant` discovery prefix creates one device per mesh node. Available
+entities include last-heard age, active state, SNR, RSSI, hops, battery, voltage,
+channel utilization, transmit airtime, packet count, environmental readings,
+and protocol-specific local statistics. Discovery, state, and the gateway's
+`online`/`offline` availability are retained so Home Assistant and the broker can
+restart independently.
+
+Coordinates are excluded by default. Add `--mqtt-include-position` only when the
+broker and every subscriber are trusted. TLS is available through `--mqtt-tls`
+and `--mqtt-ca FILE`; `--mqtt-prefix`, `--ha-discovery-prefix`, and
+`--mqtt-active-seconds` make topic and aging policy deployment-specific without
+forking the code.
+
+For platform consumers, `--mqtt-events` adds non-retained
+`events/packet`, `events/message`, `events/receipt`, and `events/gateway` topics.
+This is separate from retained Home Assistant state because it includes message
+content. The event stream is normalized and deliberately excludes raw radio
+payload dictionaries, but it should still be enabled only for trusted brokers
+and subscribers.
+
+### Companion telemetry bot
+
+An operator can query that same local mesh state from a walking companion node.
+The bot is deterministic and has no AI provider, Home Assistant access, shell,
+tools, or general query language. It is disabled until at least one exact node ID
+is allowlisted, it answers direct messages only, and every command requires a
+prefix:
+
+```sh
+meshtui gateway --protocol meshcore --port /dev/ttyUSB0 \
+  --telemetry-bot-allow '!replace-with-companion-node-id'
+```
+
+From that companion, DM the gateway one of:
+
+```text
+!mesh status
+!mesh nodes
+!mesh node <name-or-id>
+!mesh help
+```
+
+Ordinary DMs, channel posts, and messages from other nodes are left alone.
+Coordinates are also excluded from bot replies unless
+`--telemetry-bot-position` is explicitly enabled. Repeat
+`--telemetry-bot-allow` to authorize more than one companion.
+
 ## Keyboard reference
 
 Press `?` inside MeshTUI for the complete, context-aware reference.
@@ -252,7 +455,7 @@ Press `?` inside MeshTUI for the complete, context-aware reference.
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Move between panes. |
-| `/` | Focus the message composer. |
+| `/` | Open the command palette. |
 | `z` | Expand chat to full screen. |
 | `[` / `]` | Previous or next channel. |
 | `Enter` | Open node detail or inspect the selected packet. |
@@ -261,6 +464,7 @@ Press `?` inside MeshTUI for the complete, context-aware reference.
 | `m` | Open the position map. |
 | `v` | Open observed route paths. |
 | `x` | Open MeshCore remote administration. |
+| `o` | Open MeshCore room servers and catch-up posts. |
 | `r` | Open Meshtastic relay dependency and mesh health. |
 | `a` | Open the Meshtastic channel security audit. |
 | `w` | Open sensor telemetry. |
@@ -268,12 +472,15 @@ Press `?` inside MeshTUI for the complete, context-aware reference.
 | `p` | Pause or resume the packet feed. |
 | `f` | Cycle the packet filter. |
 | `s` | Cycle node sorting. |
+| `l` | Cycle the protocol-specific pane layout. |
+| `T` | Cycle the phosphor, night-vision, and high-contrast themes. |
 | `G` / `End` | Follow the newest packet. |
 | `Esc` | Leave the composer or close an overlay. |
 | `q` | Quit. |
 
-While the composer has focus, ordinary letters are text. Press `Esc` or `Tab`
-before using a single-key screen shortcut.
+While the composer has focus, ordinary letters are text. Press `Ctrl+F` to
+cycle auto, flood, and direct routing; press `Esc` or `Tab` before using a
+single-key screen shortcut.
 
 ### Chat commands
 
@@ -355,6 +562,12 @@ The project uses a small protocol-neutral core:
 - `src/meshtui/service.py` owns state, durable sends, retries, and acknowledgements.
 - `src/meshtui/radio.py` and `src/meshtui/meshcore_link.py` adapt the two protocols.
 - `src/meshtui/gateway.py` owns the radio and local socket API.
+- `src/meshtui/web.py` serves the read-only browser companion from that socket.
+- `src/meshtui/ha_mqtt.py` publishes opt-in Home Assistant discovery, state, and events.
+- `src/meshtui/plugins.py` runs the explicitly enabled local Python plugin API.
+- `src/meshtui/replay.py` builds a send-disabled ghost mesh from SQLite or captures.
+- `src/meshtui/notifications.py` fans named-node and failed-trace alerts to configured sinks.
+- `src/meshtui/preferences.py` and `src/meshtui/watch.py` persist operator-only views.
 - `src/meshtui/bot.py` implements bounded AI, path, and test routing.
 - `src/meshtui/store.py` owns SQLite persistence.
 - `src/meshtui/app.py` and `src/meshtui/widgets/` render the Textual UI.
@@ -370,9 +583,11 @@ uv run python tests/smoke.py
 ```
 
 `tests/smoke.py` drives the real Textual app headlessly. The focused tests cover
-protocol mapping, route hashes, remote-admin isolation and redaction, channel
-indices, packet rendering, reconnect behavior, durable delivery, bot limits, map
-links, and gateway streaming without requiring radio hardware.
+protocol mapping, route hashes, room catch-up, flood scope, remote-admin isolation
+and redaction, channel indices, packet rendering, reconnect behavior, durable
+delivery and receipt timelines, health metrics, saved watch filters, MQTT
+discovery/events, plugins, notifications, SQLite/PCAP replay, map links, web
+snapshots, and gateway streaming without requiring radio hardware.
 
 For an actual RF acceptance test, use two radios and verify both the received
 message and a direct-message acknowledgement. A simulated pass proves the

@@ -497,6 +497,13 @@ class RadioLink:
     def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         self.emit("error", "traceroute not supported by this link")
 
+    def request_flood_scope(self) -> None:
+        self.emit("error", "flood scopes are not supported by this link")
+
+    def set_flood_scope(self, scope: str, *, save_default: bool = False,
+                        force_unscoped: bool = False) -> None:
+        self.emit("error", "flood scopes are not supported by this link")
+
 
 class MeshtasticLink(RadioLink):
     """Shared behaviour for any link the meshtastic library can drive.

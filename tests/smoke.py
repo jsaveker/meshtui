@@ -48,14 +48,24 @@ async def main() -> int:
         await pilot.press("escape")
         await pilot.pause()
 
-        # Chat happens in the pop-out overlay; '/' opens it and focuses input.
+        # The operator palette owns '/'; z opens chat and Tab focuses input.
+        from meshtui.widgets.palette import CommandPalette
+        app.query_one(NodeTable).focus()
+        await pilot.press("slash")
+        await pilot.pause(0.3)
+        if not isinstance(app.screen, CommandPalette):
+            problems.append("'/' did not open the command palette")
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+        # Chat happens in the pop-out overlay.
         from meshtui.widgets.chat_overlay import ChatScreen
         app.query_one(NodeTable).focus()
         await pilot.pause(0.2)
-        await pilot.press("slash")
+        await pilot.press("z")
         await pilot.pause(0.4)
         if not isinstance(app.screen, ChatScreen):
-            problems.append("'/' did not open the chat overlay")
+            problems.append("'z' did not open the chat overlay")
         chat_input = app.screen.query_one("#ov-input")
         chat_input.focus(); await pilot.pause(0.1)
         chat_input.value = "hello from the smoke test"
@@ -92,9 +102,10 @@ async def main() -> int:
             problems.append("escape did not close the chat overlay")
 
         # --- escape out of the chat input ---
-        await pilot.press("slash"); await pilot.pause()
+        await pilot.press("z"); await pilot.pause()
+        await pilot.press("tab"); await pilot.pause()
         if type(app.focused).__name__ != "ChatInput":
-            problems.append("'/' did not focus the chat input")
+            problems.append("Tab did not focus the chat input")
         await pilot.press("escape"); await pilot.pause()
         if type(app.focused).__name__ == "ChatInput":
             problems.append("escape did not leave the chat input")
@@ -109,6 +120,9 @@ async def main() -> int:
 
         # --- packet inspector ---
         feed = app.query_one("#packets")
+        # `/clear` above deliberately empties only the visible feed. Rebuild it
+        # from the in-memory session before exercising selection/inspection.
+        feed.rerender(app.state)
         feed.focus()
         await pilot.pause()
         await pilot.press("i")

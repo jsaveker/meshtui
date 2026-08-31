@@ -13,8 +13,10 @@ from textual.widgets import Static
 SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     ("getting around", [
         ("tab / shift+tab", "move between panes"),
-        ("/", "jump to the message box"),
+        ("/", "open command palette: jump / filter / send / trace / login"),
         ("z", "expand chat to full screen"),
+        ("l", "cycle the protocol-specific four-pane layout"),
+        ("T", "cycle phosphor / night-vision / high-contrast"),
         ("escape", "leave the message box / close an overlay"),
         ("?", "this help"),
         ("q", "quit"),
@@ -40,6 +42,8 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("r", "relay dependency and mesh health"),
         ("w", "sensors: environment and air quality"),
         ("x", "remote admin (MeshCore repeaters)"),
+        ("o", "room servers: login, catch up, and post"),
+        ("v", "observed routes and trace history"),
         ("c", "browse and edit channels; enter jumps to one"),
         ("[  ]", "previous / next channel"),
     ]),
@@ -54,6 +58,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("t", "toggle movement trails"),
     ]),
     ("chat commands", [
+        ("ctrl+f", "cycle compose route: auto / flood / direct"),
         ("/dm <node> <text>", "direct message (short name or !id)"),
         ("/trace <node> [hops]", "traceroute; hops=1 tests only the direct link"),
         ("/nodes", "list known nodes"),
@@ -70,7 +75,8 @@ PROTOCOL_NOTE = (
 
 NOTE = (
     "While the message box has focus, every letter is text - single-key "
-    "shortcuts only work once you leave it with escape or tab."
+    "shortcuts only work once you leave it with escape or tab. Press / from "
+    "the dashboard for the operator command palette."
 )
 
 

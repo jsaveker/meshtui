@@ -84,6 +84,9 @@ class RelayView(Static):
         parts.append(Text(""))
         parts.append(Text("busiest origin -> relay paths", style="bold bright_cyan"))
         parts.append(self._edge_table())
+        parts.append(Text(""))
+        parts.append(Text("logged-in repeater neighbour tables", style="bold bright_cyan"))
+        parts.append(self._neighbour_table())
         return parts
 
     # -------------------------------------------------------------- relays
@@ -212,6 +215,35 @@ class RelayView(Static):
                 Text("->", style="grey42"),
                 label,
                 Text(str(count), style="grey70"),
+            )
+        return table
+
+    def _neighbour_table(self) -> Table:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(width=24)
+        table.add_column(width=4)
+        table.add_column(width=24)
+        table.add_column(width=8, justify="right")
+        table.add_column(width=10, justify="right")
+        table.add_row(*[Text(value, style="grey42")
+                        for value in ("repeater", "", "neighbour", "snr", "reported")])
+        edges = sorted(self.state.neighbor_edges.values(),
+                       key=lambda edge: edge.updated_ts, reverse=True)
+        if not edges:
+            table.add_row(Text("F5 in remote admin pulls this on demand", style="grey42"),
+                          Text(""), Text(""), Text(""), Text(""))
+            return table
+        now = time.time()
+        for edge in edges[:30]:
+            target = self.state.nodes.get(edge.target_id)
+            target_name = target.name if target is not None else f"0x{edge.prefix}"
+            table.add_row(
+                Text(self.state.node_name(edge.source_id), style="bright_white"),
+                Text("->", style="grey42"),
+                Text(target_name, style="yellow" if target is not None else "grey54"),
+                Text(f"{edge.snr:+.1f}" if edge.snr is not None else "-", style="cyan"),
+                Text(fmt_duration(now - edge.last_seen) if edge.last_seen else "-",
+                     style="grey62"),
             )
         return table
 

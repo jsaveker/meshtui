@@ -19,6 +19,10 @@ venv/
 meshtui.log
 *.log
 
+# Cloudflare Wrangler is not part of MeshTUI. Its local cache may contain
+# account metadata if Wrangler is accidentally run from this checkout.
+.wrangler/
+
 # Editors / OS
 .idea/
 .vscode/

@@ -18,14 +18,14 @@ async def main() -> int:
         await asyncio.sleep(1.5)
         st = app.state
         st.protocol = "meshcore"
-        st.my_node_id = "!2935ec59"
-        me = st.upsert_node({"user": {"id": "!2935ec59", "longName": "Home"},
-                             "position": {"latitude": 30.34, "longitude": -97.92}})
+        st.my_node_id = "!c0decafe"
+        me = st.upsert_node({"user": {"id": "!c0decafe", "longName": "Base"},
+                             "position": {"latitude": 0.30, "longitude": 0.30}})
         me.is_self = True
         st.upsert_node({"user": {"id": "!aa000001", "longName": "Far Node"},
-                        "position": {"latitude": 30.00, "longitude": -97.80}})
+                        "position": {"latitude": 0.00, "longitude": 0.10}})
         st.upsert_node({"user": {"id": "!4c000001", "longName": "Hilltop"},
-                        "position": {"latitude": 30.20, "longitude": -97.85}})
+                        "position": {"latitude": 0.20, "longitude": 0.20}})
         now = time.time()
         st.note_path(PathObservation(ts=now - 60, kind="advert", origin_id="!aa000001",
                                      origin_name="Far Node", path="4c", hops=1, snr=-4.0))

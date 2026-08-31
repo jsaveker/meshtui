@@ -29,6 +29,7 @@ class ChatScreen(Screen[None]):
         Binding("up", "prev", "prev channel", show=False),
         Binding("down", "next", "next channel", show=False),
         Binding("tab", "focus_input", "message", show=False),
+        Binding("ctrl+f", "cycle_route", "flood/direct", show=False, priority=True),
         # priority=True so these win over the focused ListView's own paging;
         # neither key is used by the message Input, so typing is unaffected.
         Binding("pageup", "history_up", "history", show=False, priority=True),
@@ -44,6 +45,8 @@ class ChatScreen(Screen[None]):
         # What the conversation log currently shows, so the 1.5s tick can skip
         # rewriting (and thus re-scrolling) an unchanged conversation.
         self._rendered_sig: tuple | None = None
+        self.compose_route_mode = "auto"
+        self.compose_hash_size: int | None = None
 
     def focus_input(self) -> None:
         self.query_one("#ov-input", ChatInput).focus()
@@ -56,9 +59,10 @@ class ChatScreen(Screen[None]):
             with Vertical(id="ov-right"):
                 yield RichLog(id="ov-log", highlight=False, markup=False,
                               wrap=True, min_width=20, max_lines=2000)
-                yield ChatInput(placeholder="message   esc to leave, pgup/pgdn for "
-                                            "history, /help for commands",
-                                id="ov-input")
+                with Horizontal(id="ov-compose"):
+                    yield ChatInput(placeholder="message   esc leave, ctrl+f route mode",
+                                    id="ov-input")
+                    yield Static(id="ov-preview")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -66,6 +70,7 @@ class ChatScreen(Screen[None]):
         self.query_one("#ov-log", RichLog).border_title = "conversation"
         self.rebuild_list()
         self.render_conversation()
+        self._render_compose_preview("")
         self.set_interval(1.5, self._tick)
         if self._focus_input_on_mount:
             self.focus_input()
@@ -111,9 +116,13 @@ class ChatScreen(Screen[None]):
             text.append("★ ", style="bright_yellow")
             text.append("All activity", style="bold" if active else "grey85")
         elif target[0] == "dm":
-            text.append("@ ", style="bright_yellow")
+            node = self.state.nodes.get(target[1])
+            is_room = node is not None and node.role == "ROOM"
+            text.append("⌂ " if is_room else "@ ",
+                        style="bright_magenta" if is_room else "bright_yellow")
             text.append(self.state.node_name(target[1])[:16],
-                        style="bold bright_yellow" if active else "grey85")
+                        style=("bold bright_magenta" if active and is_room else
+                               "bold bright_yellow" if active else "grey85"))
         else:
             name = self.state.channel_name(int(target[1])).lstrip("#")
             text.append("# ", style="grey54")
@@ -189,6 +198,7 @@ class ChatScreen(Screen[None]):
         if 0 <= row < len(self._targets):
             self.state.active_target = self._targets[row]
             self.render_conversation()
+            self._render_compose_preview(self.query_one("#ov-input", ChatInput).value)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.index is not None:
@@ -243,6 +253,7 @@ class ChatScreen(Screen[None]):
             style = ("bold red" if used > limit
                      else "yellow" if used > limit * 0.85 else "grey50")
             log.border_subtitle = Text(f" {used}/{limit} bytes ", style=style)
+        self._render_compose_preview(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Stop the event so it cannot bubble to the app and be transmitted a
@@ -250,7 +261,61 @@ class ChatScreen(Screen[None]):
         event.stop()
         text = event.value
         # Delegate to the app: one send path, one set of length/redaction rules.
-        if self.app_ref.send_from_overlay(text):
+        if self.app_ref.send_from_overlay(
+                text, route_mode=self.compose_route_mode,
+                path_hash_size=self.compose_hash_size):
             event.input.value = ""
             self.query_one("#ov-log", RichLog).border_subtitle = None
             self.render_conversation()
+
+    def action_cycle_route(self) -> None:
+        if self.state.protocol != "meshcore" or self.state.active_target[0] != "dm":
+            self.app_ref.note("flood/direct override applies to MeshCore DMs", "yellow")
+            return
+        modes = ("auto", "flood", "direct")
+        current = modes.index(self.compose_route_mode)
+        self.compose_route_mode = modes[(current + 1) % len(modes)]
+        self._render_compose_preview(self.query_one("#ov-input", ChatInput).value)
+
+    def _route_context(self) -> tuple[str, int | None, int | None]:
+        """Return learned route mode, hop count, and hash size for the target."""
+        target = self.state.active_target
+        if self.state.protocol != "meshcore":
+            return ("meshtastic", None, None)
+        if target[0] == "channel":
+            return ("flood", None, self.state.radio_info.get("path_hash_size"))
+        if target[0] != "dm":
+            return ("select target", None, None)
+        contacts = getattr(self.app_ref.link, "contacts", {}) or {}
+        contact = contacts.get(target[1], {})
+        hops = contact.get("out_path_len")
+        if not isinstance(hops, int):
+            node = self.state.nodes.get(target[1])
+            hops = node.hops if node is not None else None
+        learned = "flood" if hops == -1 else ("direct" if hops == 0 else "path")
+        mode = contact.get("out_path_hash_mode")
+        size = mode + 1 if isinstance(mode, int) and 0 <= mode <= 3 else None
+        return learned, hops, size
+
+    def _render_compose_preview(self, raw: str) -> None:
+        payload = outgoing_payload(raw) or ""
+        wire = payload.encode("utf-8")
+        learned, hops, hash_size = self._route_context()
+        self.compose_hash_size = hash_size
+        effective = self.compose_route_mode if self.compose_route_mode != "auto" else learned
+        out = Text()
+        out.append(" wire preview\n", style="bold grey62")
+        out.append(f" {len(wire)}/{self.app_ref.max_payload}B", style="bright_white")
+        if self.state.protocol == "meshcore":
+            out.append(f"  {effective}", style="bold bright_magenta")
+            if hops is not None and hops >= 0 and self.compose_route_mode == "auto":
+                out.append(f"  {hops} hop{'s' if hops != 1 else ''}", style="cyan")
+            out.append(f"  {hash_size or 1}B hash", style="yellow")
+            if effective == "flood":
+                out.append("  F", style="bold black on yellow")
+        out.append("\n ", style="grey42")
+        preview = " ".join(f"{byte:02x}" for byte in wire[:24])
+        out.append(preview or "type to preview bytes", style="grey62")
+        if len(wire) > 24:
+            out.append(" ...", style="grey42")
+        self.query_one("#ov-preview", Static).update(out)

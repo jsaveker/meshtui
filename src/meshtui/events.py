@@ -52,7 +52,9 @@ def destination_to_dict(destination: DestinationRef) -> dict[str, Any]:
         return {"kind": "channel", "protocol": destination.protocol,
                 "index": destination.index, "name": destination.name}
     return {"kind": "peer", "protocol": destination.protocol,
-            "node_id": destination.node_id, "public_key": destination.public_key}
+            "node_id": destination.node_id, "public_key": destination.public_key,
+            "route_mode": destination.route_mode,
+            "path_hash_size": destination.path_hash_size}
 
 
 def destination_from_dict(data: dict[str, Any]) -> DestinationRef:
@@ -60,7 +62,8 @@ def destination_from_dict(data: dict[str, Any]) -> DestinationRef:
         return ChannelRef(data.get("protocol") or "", int(data.get("index") or 0),
                           data.get("name") or "")
     return PeerRef(data.get("protocol") or "", data.get("node_id") or "",
-                   data.get("public_key"))
+                   data.get("public_key"), data.get("route_mode") or "auto",
+                   data.get("path_hash_size"))
 
 
 def receipt_to_dict(receipt: SendReceipt) -> dict[str, Any]:

@@ -86,6 +86,8 @@ def write_conversation(
             body = Text(INDENT, no_wrap=False, overflow="fold")
             body.append(line, style="white" if not msg.outgoing else "grey85")
             log.write(body)
+        if msg.outgoing:
+            log.write(_receipt_timeline(msg))
 
         prev_key = key
         prev_ts = msg.ts
@@ -110,6 +112,10 @@ def _header(msg: ChatMessage, sender: str, state: MeshState,
 
     header.append("   ")
     header.append(time.strftime("%H:%M", time.localtime(msg.ts)), style="grey42")
+    if state.protocol == "meshcore":
+        size = msg.path_hash_size or 1
+        mode = " F" if msg.route_mode == "flood" else ""
+        header.append(f"  [{size}B{mode}]", style="bold bright_magenta")
     if msg.outgoing:
         marker, style = _delivery_marker(msg)
         header.append(f"  {marker}", style=style)
@@ -117,6 +123,27 @@ def _header(msg: ChatMessage, sender: str, state: MeshState,
         if repeaters:
             header.append(f"  ⟳ {', '.join(sorted(repeaters))}", style="bright_blue")
     return header
+
+
+def _receipt_timeline(msg: ChatMessage) -> Text:
+    """Mail-client style progress using receipt and repeat state already tracked."""
+    line = Text(f"{INDENT}queued", style="grey54")
+    status = msg.delivery_status
+    if status in (DeliveryStatus.SENT.value, DeliveryStatus.DELIVERED.value):
+        line.append("  ->  radio sent", style="bright_cyan")
+    repeaters = sorted(getattr(msg, "repeated_by", None) or ())
+    if repeaters:
+        line.append(f"  ->  heard {len(repeaters)} repeat"
+                    f"{'s' if len(repeaters) != 1 else ''}", style="bright_blue")
+    if msg.acked or status == DeliveryStatus.DELIVERED.value:
+        line.append("  ->  ACK", style="bold bright_green")
+    elif status == DeliveryStatus.FAILED.value:
+        line.append("  ->  failed", style="bold red")
+    elif status == DeliveryStatus.EXPIRED.value:
+        line.append("  ->  expired", style="red")
+    else:
+        line.append("  ->  waiting", style="grey42")
+    return line
 
 
 def _delivery_marker(msg: ChatMessage) -> tuple[str, str]:

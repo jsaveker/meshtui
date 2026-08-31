@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS messages (
     packet_id   INTEGER,
     acked       INTEGER DEFAULT 0,
     message_id  TEXT,
-    delivery_status TEXT DEFAULT ''
+    delivery_status TEXT DEFAULT '',
+    path_hash_size INTEGER,
+    route_mode TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
 
@@ -158,6 +160,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     alt         INTEGER,
     battery     INTEGER,
     voltage     REAL,
+    ch_util     REAL,
+    air_util    REAL,
+    uptime      INTEGER,
     snr         REAL,
     hops        INTEGER,
     packets     INTEGER DEFAULT 0
@@ -173,6 +178,8 @@ CREATE TABLE IF NOT EXISTS outbox (
     channel_index    INTEGER,
     channel_name     TEXT,
     public_key       TEXT,
+    route_mode       TEXT DEFAULT 'auto',
+    path_hash_size   INTEGER,
     text             TEXT NOT NULL,
     status           TEXT NOT NULL,
     attempts         INTEGER DEFAULT 0,
@@ -206,6 +213,9 @@ NODE_EXTRA_COLUMNS: list[tuple[str, str]] = [
     ("location_source", "TEXT"),
     ("precision_bits", "INTEGER"),
     ("track", "TEXT"),
+    ("ch_util", "REAL"),
+    ("air_util", "REAL"),
+    ("uptime", "INTEGER"),
 ]
 
 # Key in the meta table holding the newest packet timestamp already folded into
@@ -311,10 +321,18 @@ class Store:
 
         message_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         for name, sqltype in (("message_id", "TEXT"),
-                              ("delivery_status", "TEXT DEFAULT ''")):
+                              ("delivery_status", "TEXT DEFAULT ''"),
+                              ("path_hash_size", "INTEGER"),
+                              ("route_mode", "TEXT DEFAULT ''")):
             if name not in message_cols:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {sqltype}")
         conn.execute("CREATE INDEX IF NOT EXISTS messages_message_id ON messages(message_id)")
+
+        outbox_cols = {row[1] for row in conn.execute("PRAGMA table_info(outbox)")}
+        for name, sqltype in (("route_mode", "TEXT DEFAULT 'auto'"),
+                              ("path_hash_size", "INTEGER")):
+            if name not in outbox_cols:
+                conn.execute(f"ALTER TABLE outbox ADD COLUMN {name} {sqltype}")
 
         relay_cols = {row[1] for row in conn.execute("PRAGMA table_info(relays)")}
         if "local_node" in relay_cols:
@@ -462,9 +480,10 @@ class Store:
     def add_message(self, m: ChatMessage) -> None:
         self._put(
             "INSERT INTO messages (ts, from_id, to_id, channel, text, outgoing, packet_id,"
-            " acked, message_id, delivery_status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " acked, message_id, delivery_status, path_hash_size, route_mode) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (m.ts, m.from_id, m.to_id, m.channel, m.text, int(m.outgoing), m.packet_id,
-             int(m.acked), m.message_id, m.delivery_status),
+             int(m.acked), m.message_id, m.delivery_status, m.path_hash_size, m.route_mode),
         )
 
     def ack_message(self, packet_id: int) -> None:
@@ -483,7 +502,8 @@ class Store:
         """Insert or replace the durable state of one logical outbound message."""
         columns = (
             "message_id", "created_ts", "updated_ts", "protocol", "destination_kind",
-            "target", "channel_index", "channel_name", "public_key", "text", "status",
+            "target", "channel_index", "channel_name", "public_key", "route_mode",
+            "path_hash_size", "text", "status",
             "attempts", "max_attempts", "next_attempt_ts", "expires_ts", "protocol_id",
             "error",
         )
@@ -518,8 +538,9 @@ class Store:
     def save_node(self, n: Node) -> None:
         self._put(
             "INSERT INTO nodes (node_id, num, long_name, short_name, hw_model, role,"
-            " first_seen, last_heard, lat, lon, alt, battery, voltage, snr, hops, packets)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " first_seen, last_heard, lat, lon, alt, battery, voltage, ch_util, air_util,"
+            " uptime, snr, hops, packets)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(node_id) DO UPDATE SET"
             "  num=excluded.num,"
             "  long_name=CASE WHEN excluded.long_name!='' THEN excluded.long_name"
@@ -536,12 +557,15 @@ class Store:
             "  alt=COALESCE(excluded.alt, nodes.alt),"
             "  battery=COALESCE(excluded.battery, nodes.battery),"
             "  voltage=COALESCE(excluded.voltage, nodes.voltage),"
+            "  ch_util=COALESCE(excluded.ch_util, nodes.ch_util),"
+            "  air_util=COALESCE(excluded.air_util, nodes.air_util),"
+            "  uptime=COALESCE(excluded.uptime, nodes.uptime),"
             "  snr=COALESCE(excluded.snr, nodes.snr),"
             "  hops=COALESCE(excluded.hops, nodes.hops),"
             "  packets=MAX(nodes.packets, excluded.packets)",
             (n.node_id, n.num, n.long_name, n.short_name, n.hw_model, n.role,
              n.first_seen, n.last_heard, n.lat, n.lon, n.alt, n.battery, n.voltage,
-             n.snr, n.hops, n.packets),
+             n.ch_util, n.air_util, n.uptime, n.snr, n.hops, n.packets),
         )
 
     def save_node_observation(self, n: Node) -> None:
@@ -670,6 +694,7 @@ class Store:
                 outgoing=bool(r["outgoing"]), packet_id=r["packet_id"],
                 acked=bool(r["acked"]), message_id=r["message_id"],
                 delivery_status=r["delivery_status"] or "",
+                path_hash_size=r["path_hash_size"], route_mode=r["route_mode"] or "",
             )
             for r in rows
         ]
@@ -689,6 +714,46 @@ class Store:
         )
         return [dict(row) for row in rows]
 
+    def replay_packets(self, start_ts: float | None = None,
+                       end_ts: float | None = None,
+                       limit: int = 20000) -> list[dict[str, Any]]:
+        """Captured packet rows for a bounded ghost replay, oldest first."""
+        clauses, params = [], []
+        if start_ts is not None:
+            clauses.append("ts>=?")
+            params.append(float(start_ts))
+        if end_ts is not None:
+            clauses.append("ts<=?")
+            params.append(float(end_ts))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(100000, int(limit))))
+        rows = self._read(
+            f"SELECT * FROM packets{where} ORDER BY ts ASC LIMIT ?", tuple(params))
+        return [dict(row) for row in rows]
+
+    def replay_messages(self, start_ts: float | None = None,
+                        end_ts: float | None = None,
+                        limit: int = 20000) -> list[ChatMessage]:
+        clauses, params = [], []
+        if start_ts is not None:
+            clauses.append("ts>=?")
+            params.append(float(start_ts))
+        if end_ts is not None:
+            clauses.append("ts<=?")
+            params.append(float(end_ts))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(100000, int(limit))))
+        rows = self._read(
+            f"SELECT * FROM messages{where} ORDER BY ts ASC LIMIT ?", tuple(params))
+        return [ChatMessage(
+            ts=row["ts"], from_id=row["from_id"] or "", from_name="",
+            to_id=row["to_id"] or "", text=row["text"] or "",
+            channel=row["channel"] or 0, outgoing=bool(row["outgoing"]),
+            packet_id=row["packet_id"], acked=bool(row["acked"]),
+            message_id=row["message_id"], delivery_status=row["delivery_status"] or "",
+            path_hash_size=row["path_hash_size"], route_mode=row["route_mode"] or "",
+        ) for row in rows]
+
     def known_nodes(self) -> list[dict[str, Any]]:
         """Node records shaped like meshtastic NodeDB entries, for upsert_node."""
         out: list[dict[str, Any]] = []
@@ -707,9 +772,13 @@ class Store:
             if r["lat"] is not None and r["lon"] is not None:
                 record["position"] = {"latitude": r["lat"], "longitude": r["lon"],
                                       "altitude": r["alt"]}
-            if r["battery"] is not None:
-                record["deviceMetrics"] = {"batteryLevel": r["battery"],
-                                           "voltage": r["voltage"]}
+            metrics = {key: value for key, value in (
+                ("batteryLevel", r["battery"]), ("voltage", r["voltage"]),
+                ("channelUtilization", r["ch_util"]), ("airUtilTx", r["air_util"]),
+                ("uptimeSeconds", r["uptime"]),
+            ) if value is not None}
+            if metrics:
+                record["deviceMetrics"] = metrics
             record["_first_seen"] = r["first_seen"]
             record["_packets"] = r["packets"] or 0
             keys = r.keys()

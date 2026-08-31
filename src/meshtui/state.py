@@ -77,6 +77,17 @@ class RelayStat:
 
 
 @dataclass
+class NeighborEdge:
+    """One repeater-reported adjacency, independent of our own receiver view."""
+    source_id: str
+    target_id: str
+    prefix: str
+    snr: float | None = None
+    last_seen: float | None = None
+    updated_ts: float = field(default_factory=time.time)
+
+
+@dataclass
 class LocalChannel:
     """One of our own node's channels, where we can see the key."""
 
@@ -94,6 +105,10 @@ class Stats:
     sent: int = 0
     by_port: Counter[str] = field(default_factory=Counter)
     _times: deque[float] = field(default_factory=lambda: deque(maxlen=PACKET_BUFFER))
+    # Samples of the radio's cumulative TX+RX airtime counters. Keeping the
+    # point immediately before the one-hour boundary lets us interpolate an
+    # honest rolling utilization instead of reporting lifetime totals.
+    _air_samples: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=7200))
 
     def record(self, packet: Packet) -> None:
         self.total += 1
@@ -111,6 +126,43 @@ class Stats:
             return 0.0
         span = max(now - min(recent), 1.0)
         return len(recent) * 60.0 / span
+
+    def record_radio_airtime(self, info: dict[str, Any], ts: float | None = None) -> None:
+        tx, rx = info.get("tx_air_secs"), info.get("rx_air_secs")
+        if not isinstance(tx, (int, float)) or not isinstance(rx, (int, float)):
+            return
+        stamp = time.time() if ts is None else ts
+        total = max(0.0, float(tx) + float(rx))
+        if self._air_samples and total < self._air_samples[-1][1]:
+            # Radio reboot or counter wrap starts a new window.
+            self._air_samples.clear()
+        if self._air_samples and stamp <= self._air_samples[-1][0]:
+            self._air_samples[-1] = (stamp, total)
+        else:
+            self._air_samples.append((stamp, total))
+        cutoff = stamp - 3600.0
+        while len(self._air_samples) > 2 and self._air_samples[1][0] < cutoff:
+            self._air_samples.popleft()
+
+    def airtime_last_hour(self, now: float | None = None) -> float | None:
+        if len(self._air_samples) < 2:
+            return None
+        end_ts, end_air = self._air_samples[-1]
+        cutoff = (end_ts if now is None else min(now, end_ts)) - 3600.0
+        points = list(self._air_samples)
+        start_ts, start_air = points[0]
+        if start_ts < cutoff:
+            for left, right in zip(points, points[1:]):
+                if left[0] <= cutoff <= right[0]:
+                    span = max(0.001, right[0] - left[0])
+                    fraction = (cutoff - left[0]) / span
+                    start_ts = cutoff
+                    start_air = left[1] + (right[1] - left[1]) * fraction
+                    break
+        elapsed = end_ts - start_ts
+        if elapsed <= 0:
+            return None
+        return max(0.0, min(100.0, (end_air - start_air) / elapsed * 100.0))
 
     @property
     def uptime(self) -> float:
@@ -140,6 +192,7 @@ class MeshState:
         self.foreign_channels: dict[int, ForeignChannel] = {}
         self.relays: dict[int, RelayStat] = {}
         self.relay_edges: Counter[tuple[str, int]] = Counter()
+        self.neighbor_edges: dict[tuple[str, str], NeighborEdge] = {}
         self.mqtt_packets: int = 0
         # Newest packet timestamp folded into state, so a restart can
         # replay only what the persisted snapshot has not already seen.
@@ -214,6 +267,36 @@ class MeshState:
     def paths(self) -> list[Any]:
         """Observations oldest-first (insertion order)."""
         return list(self._path_obs.values())
+
+    def note_neighbours(self, source_id: str,
+                        neighbours: list[dict[str, Any]]) -> list[NeighborEdge]:
+        """Merge a logged-in repeater's neighbor-table response into the graph."""
+        updated: list[NeighborEdge] = []
+        now = time.time()
+        for entry in neighbours:
+            raw = entry.get("pubkey") or entry.get("public_key") or ""
+            prefix = raw.hex() if isinstance(raw, (bytes, bytearray)) else str(raw)
+            prefix = prefix.casefold().removeprefix("0x").removeprefix("!")
+            if not prefix:
+                continue
+            candidates = [node for node in self.nodes.values()
+                          if node.node_id.lstrip("!").casefold().startswith(prefix)]
+            target_id = candidates[0].node_id if len(candidates) == 1 else f"prefix:{prefix}"
+            try:
+                snr = float(entry["snr"]) if entry.get("snr") is not None else None
+            except (TypeError, ValueError):
+                snr = None
+            try:
+                seconds = float(entry["secs_ago"]) if entry.get("secs_ago") is not None else None
+            except (TypeError, ValueError):
+                seconds = None
+            edge = NeighborEdge(
+                source_id=source_id, target_id=target_id, prefix=prefix,
+                snr=snr, last_seen=now - seconds if seconds is not None else None,
+                updated_ts=now)
+            self.neighbor_edges[(source_id, target_id)] = edge
+            updated.append(edge)
+        return updated
 
     # ---------------------------------------------------------------- nodes
 
@@ -310,8 +393,8 @@ class MeshState:
         """Every node a token could mean, within the strongest matching tier.
 
         MeshCore short names are the first four letters of the long name, so
-        'Tach' can mean both Tachyon Home and Tachyon Mobile - a caller that
-        silently takes the first match once DMed the user's own radio.
+        'Fiel' can mean both Field Base and Field Mobile, so callers must not
+        silently take the first match.
         """
         token = token.strip()
         if not token:
@@ -572,7 +655,9 @@ class MeshState:
         if kind == "all":
             return "all activity"
         if kind == "dm":
-            return f"@{self.node_name(target[1])}"
+            node = self.nodes.get(target[1])
+            return (("room " if node is not None and node.role == "ROOM" else "@")
+                    + self.node_name(target[1]))
         name = self.channel_name(int(target[1]))
         # MeshCore channel names already start with '#'; don't double it.
         return name if name.startswith("#") else f"#{name}"

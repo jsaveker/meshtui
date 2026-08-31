@@ -5,7 +5,7 @@ forecast from Open-Meteo - keyless and free for non-commercial use - for the
 station's own advertised position, and post one compact line in the dialect
 the channel's other weather bot speaks:
 
-    [Steiner Ranch] 94F (feels 101F), Humidity 41%, Wind E 1mph,
+    [Field Site] 94F (feels 101F), Humidity 41%, Wind E 1mph,
     partly cloudy | Hi 99F Lo 75F, rain 20%
 
 A posted slot is remembered in the store, so a gateway restart minutes after

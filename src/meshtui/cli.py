@@ -26,6 +26,9 @@ def _gateway_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demo", action="store_true", help="use the synthetic mesh")
     parser.add_argument("--db", help=f"database path (default: {default_db_path()})")
     parser.add_argument("--socket", help="local Unix socket path")
+    parser.add_argument(
+        "--plugins", nargs="?", const="", metavar="DIR",
+        help="load trusted Python plugins (default dir: ~/.config/meshtui/plugins)")
     parser.add_argument("--bot-channel", metavar="NAME_OR_SLOT",
                         help="enable @ai routing on this channel, e.g. '#bots' or 5")
     parser.add_argument("--pathbot", metavar="NAME_OR_SLOT",
@@ -36,8 +39,8 @@ def _gateway_parser() -> argparse.ArgumentParser:
                              "hop count they arrived over, e.g. '#testing'")
     parser.add_argument("--testbot-location", metavar="PLACE", default="",
                         help="place name appended to testbot receipts, e.g. "
-                             "'Steiner Ranch' -> '3 hops to Tachyon Home "
-                             "(Steiner Ranch)'")
+                             "'Field Site' -> '3 hops to Base Station "
+                             "(Field Site)'")
     parser.add_argument("--weatherbot", metavar="NAME_OR_SLOT",
                         help="post the weather to this channel on a schedule, "
                              "e.g. '#wx'")
@@ -50,6 +53,54 @@ def _gateway_parser() -> argparse.ArgumentParser:
                              "export)")
     parser.add_argument("--ai-model", default="gpt-5-mini")
     parser.add_argument("--ai-endpoint", help="Responses-compatible API endpoint")
+    telemetry = parser.add_argument_group("companion telemetry bot")
+    telemetry.add_argument(
+        "--telemetry-bot-allow", metavar="NODE_ID", action="append", default=[],
+        help="allow this node to DM the local telemetry bot (repeatable; enables the bot)")
+    telemetry.add_argument(
+        "--telemetry-bot-trigger", default="!mesh", metavar="WORD",
+        help="required first word in an allowed DM (default: !mesh)")
+    telemetry.add_argument(
+        "--telemetry-bot-position", action="store_true",
+        help="allow the bot to include coordinates in replies (off by default)")
+    mqtt = parser.add_argument_group("MQTT and Home Assistant discovery")
+    mqtt.add_argument("--mqtt-host", metavar="HOST",
+                      help="publish mesh telemetry to this MQTT broker")
+    mqtt.add_argument("--mqtt-port", type=int, default=1883, metavar="PORT")
+    mqtt.add_argument("--mqtt-username", metavar="USER")
+    mqtt.add_argument(
+        "--mqtt-password-env", metavar="ENV_VAR",
+        help="read the MQTT password from this environment variable")
+    mqtt.add_argument("--mqtt-tls", action="store_true", help="enable MQTT TLS")
+    mqtt.add_argument("--mqtt-ca", metavar="FILE", help="CA certificate for MQTT TLS")
+    mqtt.add_argument("--mqtt-prefix", default="meshtui", metavar="TOPIC",
+                      help="MQTT state topic root (default: meshtui)")
+    mqtt.add_argument("--ha-discovery-prefix", default="homeassistant", metavar="TOPIC",
+                      help="Home Assistant discovery root (default: homeassistant)")
+    mqtt.add_argument("--mqtt-gateway-id", metavar="ID",
+                      help="stable gateway identifier (default: local hostname)")
+    mqtt.add_argument("--mqtt-include-position", action="store_true",
+                      help="publish node coordinates (off by default)")
+    mqtt.add_argument("--mqtt-events", action="store_true",
+                      help="publish non-retained normalized packet/message/receipt events "
+                           "without raw radio payloads")
+    mqtt.add_argument("--mqtt-active-seconds", type=float, default=900, metavar="SECONDS",
+                      help="age after which a node is inactive (default: 900)")
+    notify = parser.add_argument_group("notifications")
+    notify.add_argument("--notify-node", action="append", default=[], metavar="NAME_OR_ID",
+                        help="notify when this node reappears (repeatable; wildcards allowed)")
+    notify.add_argument("--notify-trace-fail", action="store_true",
+                        help="notify when a trace/path discovery reports failure")
+    notify.add_argument("--notify-desktop", action="store_true",
+                        help="deliver configured rules to the local desktop")
+    notify.add_argument("--notify-active-seconds", type=float, default=900,
+                        metavar="SECONDS", help="absence window before reappearance (default: 900)")
+    notify.add_argument("--ntfy-topic", metavar="TOPIC",
+                        help="deliver configured rules to an ntfy topic")
+    notify.add_argument("--ntfy-url", default="https://ntfy.sh", metavar="URL",
+                        help="ntfy server root (default: https://ntfy.sh)")
+    notify.add_argument("--ntfy-token-env", metavar="ENV_VAR",
+                        help="read an ntfy access token from this environment variable")
     parser.add_argument("--debug", action="store_true")
     return parser
 
@@ -73,6 +124,44 @@ def run_gateway(argv: list[str]) -> int:
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    mqtt_config = None
+    if args.mqtt_password_env and not args.mqtt_host:
+        print("--mqtt-password-env requires --mqtt-host", file=sys.stderr)
+        return 2
+    if args.mqtt_host:
+        from .ha_mqtt import MQTTConfig, default_gateway_id
+        password = None
+        if args.mqtt_password_env:
+            password = os.environ.get(args.mqtt_password_env)
+            if password is None:
+                print(f"MQTT password environment variable {args.mqtt_password_env!r} is not set",
+                      file=sys.stderr)
+                return 2
+        try:
+            mqtt_config = MQTTConfig(
+                host=args.mqtt_host, port=args.mqtt_port,
+                username=args.mqtt_username, password=password,
+                tls=args.mqtt_tls, ca_certs=args.mqtt_ca,
+                base_topic=args.mqtt_prefix,
+                discovery_prefix=args.ha_discovery_prefix,
+                gateway_id=args.mqtt_gateway_id or default_gateway_id(),
+                include_position=args.mqtt_include_position,
+                publish_events=args.mqtt_events,
+                active_seconds=args.mqtt_active_seconds,
+            )
+        except ValueError as exc:
+            print(f"invalid MQTT configuration: {exc}", file=sys.stderr)
+            return 2
+    ntfy_token = None
+    if args.ntfy_token_env:
+        if not args.ntfy_topic:
+            print("--ntfy-token-env requires --ntfy-topic", file=sys.stderr)
+            return 2
+        ntfy_token = os.environ.get(args.ntfy_token_env)
+        if ntfy_token is None:
+            print(f"ntfy token environment variable {args.ntfy_token_env!r} is not set",
+                  file=sys.stderr)
+            return 2
     store = Store(args.db)
     if not store.open():
         print(store.error or "could not open gateway database", file=sys.stderr)
@@ -82,18 +171,35 @@ def run_gateway(argv: list[str]) -> int:
             return int(value)
         return value
 
-    gateway = build_gateway(
-        store=store, port=args.port, host=args.host, protocol=args.protocol,
-        demo=args.demo, socket_path=args.socket,
-        bot_channel=_channel_arg(args.bot_channel),
-        pathbot_channel=_channel_arg(args.pathbot),
-        testbot_channel=_channel_arg(args.testbot),
-        testbot_location=args.testbot_location,
-        map_upload=args.map_upload,
-        weatherbot_channel=_channel_arg(args.weatherbot),
-        weatherbot_times=args.weatherbot_times,
-        ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
-    )
+    try:
+        gateway = build_gateway(
+            store=store, port=args.port, host=args.host, protocol=args.protocol,
+            demo=args.demo, socket_path=args.socket,
+            bot_channel=_channel_arg(args.bot_channel),
+            pathbot_channel=_channel_arg(args.pathbot),
+            testbot_channel=_channel_arg(args.testbot),
+            testbot_location=args.testbot_location,
+            telemetry_bot_nodes=args.telemetry_bot_allow,
+            telemetry_bot_trigger=args.telemetry_bot_trigger,
+            telemetry_bot_position=args.telemetry_bot_position,
+            mqtt_config=mqtt_config,
+            plugin_dir=args.plugins,
+            notify_nodes=args.notify_node,
+            notify_trace_failures=args.notify_trace_fail,
+            notify_desktop=args.notify_desktop,
+            ntfy_topic=args.ntfy_topic,
+            ntfy_url=args.ntfy_url,
+            ntfy_token=ntfy_token,
+            notify_active_seconds=args.notify_active_seconds,
+            map_upload=args.map_upload,
+            weatherbot_channel=_channel_arg(args.weatherbot),
+            weatherbot_times=args.weatherbot_times,
+            ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
+        )
+    except (RuntimeError, ValueError) as exc:
+        store.close()
+        print(f"invalid gateway configuration: {exc}", file=sys.stderr)
+        return 2
     try:
         gateway.start()
         print(f"meshtui gateway listening on {gateway.socket_path}", flush=True)
@@ -214,6 +320,94 @@ def run_gateway_status(argv: list[str]) -> int:
     return 0 if result.get("ok") else 1
 
 
+def run_serve(argv: list[str]) -> int:
+    """Serve the read-only browser companion from a gateway subscription."""
+    import signal
+    from .web import CompanionServer
+
+    parser = argparse.ArgumentParser(
+        prog="meshtui serve",
+        description="Read-only map and chat web companion over a running gateway socket.")
+    parser.add_argument("--gateway", metavar="SOCKET", help="gateway Unix socket path")
+    parser.add_argument("--listen", default="127.0.0.1", metavar="ADDRESS",
+                        help="HTTP listen address (default: 127.0.0.1; use 0.0.0.0 for LAN)")
+    parser.add_argument("--port", type=int, default=8765, help="HTTP port (default: 8765)")
+    args = parser.parse_args(argv)
+    server = CompanionServer(args.gateway, args.listen, args.port)
+
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _graceful)
+    try:
+        server.start()
+        host, port = server.address
+        print(f"meshtui companion listening on http://{host}:{port}", flush=True)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"companion failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        server.stop()
+    return 0
+
+
+def run_replay(argv: list[str]) -> int:
+    """Replay a captured SQLite/PCAP window through a second read-only gateway."""
+    import signal
+    from .replay import (build_pcap_replay_gateway, build_replay_gateway,
+                         default_replay_socket_path)
+
+    parser = argparse.ArgumentParser(
+        prog="meshtui replay",
+        description="Replay a SQLite or PCAP/PCAPNG window as a read-only ghost gateway.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--db", help="source meshtui SQLite database")
+    source.add_argument("--pcap", help="source PCAP or PCAPNG packet capture")
+    parser.add_argument("--socket", default=str(default_replay_socket_path()),
+                        help="ghost gateway socket path")
+    parser.add_argument("--from", dest="start_ts", type=float, metavar="EPOCH")
+    parser.add_argument("--to", dest="end_ts", type=float, metavar="EPOCH")
+    parser.add_argument("--limit", type=int, default=20000)
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="playback speed multiplier (default: 1)")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--protocol", choices=("auto", "meshtastic", "meshcore"),
+                        default="auto")
+    args = parser.parse_args(argv)
+    if args.start_ts is not None and args.end_ts is not None \
+            and args.start_ts > args.end_ts:
+        print("--from must not be later than --to", file=sys.stderr)
+        return 2
+    try:
+        builder = build_pcap_replay_gateway if args.pcap else build_replay_gateway
+        gateway = builder(
+            args.pcap or args.db, socket_path=args.socket, start_ts=args.start_ts,
+            end_ts=args.end_ts, limit=args.limit, speed=args.speed,
+            loop=args.loop, protocol=args.protocol)
+    except ValueError as exc:
+        print(f"invalid replay: {exc}", file=sys.stderr)
+        return 2
+
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _graceful)
+    try:
+        gateway.start()
+        print(f"ghost mesh listening on {gateway.socket_path}", flush=True)
+        print(f"attach with: meshtui --gateway {gateway.socket_path}", flush=True)
+        gateway.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"replay failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        gateway.stop()
+    return 0
+
+
 def run_audit(db_path: str | None) -> int:
     """Offline channel audit over a captured database.
 
@@ -303,11 +497,15 @@ def main(argv: list[str] | None = None) -> int:
         return run_send(argv[1:])
     if argv and argv[0] == "gateway-status":
         return run_gateway_status(argv[1:])
+    if argv and argv[0] == "serve":
+        return run_serve(argv[1:])
+    if argv and argv[0] == "replay":
+        return run_replay(argv[1:])
     parser = argparse.ArgumentParser(
         prog="meshtui",
         description="Terminal dashboard and gateway for Meshtastic and MeshCore meshes.",
-        epilog=("unattended commands: meshtui gateway, meshtui gateway-status, "
-                "meshtui send dm, meshtui send channel"),
+        epilog=("unattended commands: meshtui gateway, meshtui serve, meshtui replay, "
+                "meshtui gateway-status, meshtui send dm, meshtui send channel"),
     )
     parser.add_argument("-p", "--port", help="serial device (default: autodetect)")
     parser.add_argument(

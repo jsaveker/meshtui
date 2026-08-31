@@ -47,6 +47,22 @@ from .radio import Emit, RadioLink
 
 log = logging.getLogger(__name__)
 
+
+def normalize_flood_scope(scope: str, *, allow_unscoped: bool = True) -> str:
+    """Return the canonical MeshCore scope accepted by companion firmware."""
+    value = str(scope or "").strip()
+    if value == "*":
+        if not allow_unscoped:
+            raise ValueError("'*' is a session-only unscoped override, not a saved default")
+        return value
+    if value and not value.startswith("#"):
+        value = "#" + value
+    if any(ord(char) < 32 or ord(char) > 126 for char in value):
+        raise ValueError("flood scope must use printable ASCII")
+    if len(value.encode("ascii")) > 31:
+        raise ValueError("flood scope must be at most 31 bytes including '#'")
+    return value
+
 # Contact type values from MeshCore's advert types.
 CONTACT_TYPES = {1: "CHAT", 2: "REPEATER", 3: "ROOM", 4: "SENSOR"}
 
@@ -472,6 +488,12 @@ class MeshCoreLink(RadioLink):
             EventType.LOGIN_FAILED: self._on_login_fail,
             EventType.DISCONNECTED: self._on_disconnected,
         }
+        # Flood scopes arrived after the original companion protocol. Keep
+        # startup compatible with an older meshcore_py while making the
+        # feature first-class when the installed library exposes it.
+        default_scope = getattr(EventType, "DEFAULT_FLOOD_SCOPE", None)
+        if default_scope is not None:
+            handlers[default_scope] = self._on_flood_scope
         for event_type, handler in handlers.items():
             try:
                 self.mc.subscribe(event_type, handler)
@@ -532,6 +554,13 @@ class MeshCoreLink(RadioLink):
         key = data.get("public_key") or data.get("pubkey")
         self.emit("status", f"new contact: {data.get('adv_name') or key_to_id(key)}")
 
+    def _on_flood_scope(self, event: Any) -> None:
+        data = self._payload(event)
+        self.emit("mc_flood_scope", {
+            "default_flood_scope": str(data.get("scope_name") or ""),
+            "default_flood_scope_key": str(data.get("scope_key") or ""),
+        })
+
     def _on_direct_message(self, event: Any) -> None:
         data = self._payload(event)
         node_id = key_to_id(data.get("pubkey_prefix") or data.get("public_key"))
@@ -547,12 +576,31 @@ class MeshCoreLink(RadioLink):
                          to_id=self.my_node_id, snr=self._signal(data, "snr"), raw=data)
             return
 
+        # A room pushes signed posts as a DM from the room contact. The four
+        # signature bytes identify the original author; keep the conversation
+        # attached to the room while rendering the actual author when that
+        # prefix resolves uniquely in our contacts.
+        sender_name = ""
+        room = self.contacts.get(node_id) or {}
+        signature = str(data.get("signature") or "").casefold()
+        is_room_post = data.get("txt_type") == 2 and room.get("type") == 3
+        if is_room_post and signature:
+            candidates = [contact for contact in self.contacts.values()
+                          if str(contact.get("public_key") or contact.get("pubkey") or "")
+                          .casefold().startswith(signature)]
+            if len(candidates) == 1:
+                sender_name = str(candidates[0].get("adv_name") or "")
+            sender_name = sender_name or f"!{signature[:8]}"
+
         self.emit("chat", ChatMessage(
             ts=data.get("sender_timestamp") or time.time(),
-            from_id=node_id, from_name="", to_id=self.my_node_id, text=text,
-            channel=-1,
+            from_id=node_id, from_name=sender_name, to_id=self.my_node_id, text=text,
+            channel=-1, path_hash_size=data.get("path_hash_size"),
+            route_mode=str(data.get("route_typename") or "").casefold(),
         ))
-        self._packet(PORT_TEXT, node_id, f'"{text}"', to_id=self.my_node_id,
+        summary = (f"room post by {sender_name}: {text}" if is_room_post
+                   else f'"{text}"')
+        self._packet(PORT_TEXT, node_id, summary, to_id=self.my_node_id,
                      snr=self._signal(data, "snr"), raw=data)
 
     def _on_channel_message(self, event: Any) -> None:
@@ -567,7 +615,8 @@ class MeshCoreLink(RadioLink):
         self.emit("chat", ChatMessage(
             ts=data.get("sender_timestamp") or time.time(),
             from_id=node_id, from_name="", to_id=BROADCAST, text=text,
-            channel=channel,
+            channel=channel, path_hash_size=data.get("path_hash_size"),
+            route_mode=str(data.get("route_typename") or "flood").casefold(),
         ))
         self._packet(PORT_TEXT, node_id, f'"{text}"',
                      snr=self._signal(data, "snr"), rssi=self._signal(data, "rssi"),
@@ -945,8 +994,18 @@ class MeshCoreLink(RadioLink):
         return self.contacts.get(node_id)
 
     def _destination_for(self, peer: PeerRef) -> dict[str, Any] | str | None:
-        """Prefer the live contact (and its path), then a durable full key."""
-        return self._contact_for(peer.node_id) or peer.public_key
+        """Build per-send routing without mutating the durable radio contact."""
+        contact = self._contact_for(peer.node_id)
+        if contact is None:
+            return peer.public_key
+        destination = dict(contact)
+        if peer.route_mode == "flood":
+            destination["out_path"] = ""
+            destination["out_path_len"] = -1
+        elif peer.route_mode == "direct":
+            destination["out_path"] = ""
+            destination["out_path_len"] = 0
+        return destination
 
     def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
         contact = self._contact_for(dest)
@@ -1026,6 +1085,50 @@ class MeshCoreLink(RadioLink):
                          f"neighbours reported", raw=result)
 
         self._submit(_fetch())
+
+    def request_flood_scope(self) -> None:
+        """Read the radio's persisted default scope without changing it."""
+        command = getattr(self.mc.commands, "get_default_flood_scope", None)
+        if command is None:
+            self.emit("error", "this MeshCore companion firmware/library does not support flood scopes")
+            return
+        self._submit(command())
+
+    def set_flood_scope(self, scope: str, *, save_default: bool = False,
+                        force_unscoped: bool = False) -> None:
+        """Apply a runtime scope, or persist the radio's default scope.
+
+        ``force_unscoped`` is deliberately separate from an empty scope: an
+        empty runtime scope means "use the configured default", whereas `*`
+        means send floods outside every scope.
+        """
+        normalized = normalize_flood_scope(scope, allow_unscoped=not save_default)
+        if force_unscoped:
+            normalized = "*"
+
+        async def _set() -> None:
+            try:
+                if save_default:
+                    await self.mc.commands.set_default_flood_scope(normalized)
+                    self.emit("status", f"default flood scope: {normalized or 'disabled'}")
+                    # Ask the device for the authoritative persisted value.
+                    await self.mc.commands.get_default_flood_scope()
+                else:
+                    await self.mc.commands.set_flood_scope(
+                        normalized, force_unscoped=(normalized == "*"))
+                    self.emit("mc_flood_scope", {
+                        "active_flood_scope": normalized,
+                        "active_flood_scope_mode": (
+                            "unscoped" if normalized == "*" else
+                            "default" if not normalized else "session"),
+                    })
+                    self.emit("status", "active flood scope: " + (
+                        "UNSCOPED" if normalized == "*" else
+                        normalized or "radio default"))
+            except Exception as exc:  # noqa: BLE001 - surface device rejection
+                self.emit("error", f"could not set flood scope: {exc}")
+
+        self._submit(_set())
 
     # Auto-add bits, from examples/companion_radio/MyMesh.cpp.
     AUTOADD_OVERWRITE_OLDEST = 0x01

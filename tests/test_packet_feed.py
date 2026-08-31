@@ -36,7 +36,7 @@ async def main():
 
         # interleave packets and notices, as a real session does
         for i in range(5):
-            feed.add(Packet(ts=1787871679.0 + i, from_id="!bc20c203", to_id="^all",
+            feed.add(Packet(ts=1787871679.0 + i, from_id="!bcdecafe", to_id="^all",
                             portnum="TEXT_MESSAGE_APP", summary=f"msg {i}",
                             channel=0), app.state)
         feed.write_notice("  traceroute to REP: 2 hops", "bold bright_cyan")
@@ -75,7 +75,7 @@ async def main():
         # follow must track the newest row as packets arrive, and stop when
         # the user scrolls up (these lived in dead code once - regression)
         def mk(summary):
-            return Packet(ts=1787871800.0, from_id="!bc20c203", to_id="^all",
+            return Packet(ts=1787871800.0, from_id="!bcdecafe", to_id="^all",
                           portnum="TEXT_MESSAGE_APP", summary=summary, channel=0)
         feed.follow = True
         for i in range(30):

@@ -27,7 +27,7 @@ from .model import (
 )
 from .radio import RadioLink, protocol_payload_limit
 from .state import LocalChannel, MeshState
-from .store import LAST_OBSERVER, Store
+from .store import LAST_OBSERVER, Store, state_ts_key
 
 
 ServiceListener = Callable[[str, Any], None]
@@ -67,6 +67,8 @@ class OutboundMessage:
             "channel_index": channel.index if channel else None,
             "channel_name": channel.name if channel else None,
             "public_key": peer.public_key if peer else None,
+            "route_mode": peer.route_mode if peer else None,
+            "path_hash_size": peer.path_hash_size if peer else None,
             "text": self.text,
             "status": self.status.value,
             "attempts": self.attempts,
@@ -85,7 +87,8 @@ class OutboundMessage:
                 row.get("channel_name") or "")
         else:
             destination = PeerRef(row["protocol"], row.get("target") or "",
-                                  row.get("public_key"))
+                                  row.get("public_key"), row.get("route_mode") or "auto",
+                                  row.get("path_hash_size"))
         return cls(
             message_id=row["message_id"], destination=destination, text=row.get("text") or "",
             created_ts=float(row.get("created_ts") or time.time()),
@@ -158,13 +161,17 @@ class MeshService:
             if last:
                 self.store.local_node = str(last)
         for record in self.store.known_nodes():
-            record.pop("_first_seen", None)
+            first_seen = record.pop("_first_seen", None)
             record.pop("_packets", None)
-            record.pop("_derived", None)
+            derived = record.pop("_derived", {})
             try:
-                self.state.upsert_node(record)
+                node = self.state.upsert_node(record)
             except ValueError:
                 continue
+            if first_seen:
+                node.first_seen = first_seen
+            self._apply_derived(node, derived)
+        self._restore_observations()
         for message in self.store.recent_messages():
             self.state.add_chat(message)
             if message.is_dm:
@@ -172,6 +179,79 @@ class MeshService:
                 self.state.dm_contacts.add(other)
         for obs in self.store.recent_paths():
             self.state.note_path(obs)
+
+    @staticmethod
+    def _apply_derived(node, derived: dict[str, Any]) -> None:
+        """Restore telemetry folded into the durable node snapshot."""
+        if not derived:
+            return
+        for value in derived.get("snr_history") or []:
+            try:
+                node.snr_history.append(float(value))
+            except (TypeError, ValueError):
+                pass
+        for source, target, timestamp in (
+            ("env", "env", "env_ts"),
+            ("local_stats", "local_stats", "local_stats_ts"),
+        ):
+            values = derived.get(source) or {}
+            clean = {str(key): float(value) for key, value in values.items()
+                     if isinstance(value, (int, float))}
+            if clean:
+                getattr(node, target).update(clean)
+                setattr(node, timestamp, derived.get(timestamp))
+        for point in derived.get("track") or []:
+            if isinstance(point, (list, tuple)) and len(point) == 3:
+                try:
+                    node.track.append((float(point[0]), float(point[1]), float(point[2])))
+                except (TypeError, ValueError):
+                    pass
+        for key in ("speed_mps", "heading_deg", "sats", "precision_bits"):
+            if derived.get(key) is not None:
+                setattr(node, key, derived[key])
+        if derived.get("location_source"):
+            node.location_source = str(derived["location_source"])
+
+    def _restore_observations(self) -> None:
+        store = self.store
+        if store is None or not store.enabled or store.local_node is None:
+            return
+        for node_id, obs in store.load_node_observations().items():
+            node = self.state.nodes.get(node_id)
+            if node is None:
+                continue
+            node.snr = obs["snr"]
+            node.hops = obs["hops"]
+            node.packets = obs["packets"] or 0
+            if obs["last_heard"]:
+                node.last_heard = max(node.last_heard or 0.0, obs["last_heard"])
+            node.snr_history.clear()
+            for value in obs["snr_history"]:
+                try:
+                    node.snr_history.append(float(value))
+                except (TypeError, ValueError):
+                    pass
+
+    def persist_snapshot(self) -> None:
+        """Persist state derived from packets without writing once per packet."""
+        store = self.store
+        if store is None or not store.enabled or store.local_node is None:
+            return
+        with self._lock:
+            for node in self.state.nodes.values():
+                store.save_node(node)
+                store.save_node_derived(node)
+                store.save_node_observation(node)
+            for relay in self.state.relays.values():
+                store.save_relay(relay.byte, relay.packets, relay.origins,
+                                 relay.first_seen, relay.last_seen,
+                                 relay.snr_sum, relay.snr_n)
+            for (origin, byte), count in self.state.relay_edges.items():
+                store.save_relay_edge(origin, byte, count)
+            for channel in self.state.foreign_channels.values():
+                store.save_foreign_channel(channel)
+            store.set_meta(state_ts_key(store.local_node), self.state.last_packet_ts)
+            store.set_meta(LAST_OBSERVER, store.local_node)
 
     # ------------------------------------------------------------- inbound
 
@@ -207,6 +287,12 @@ class MeshService:
             elif kind == "mc_radio_stats":
                 # Local RF statistics ride in radio_info so they reach gateway
                 # clients through the connected snapshot as well as live.
+                self.state.radio_info.update(payload)
+                self.state.stats.record_radio_airtime(payload)
+            elif kind == "mc_neighbours":
+                node_id, neighbours = payload
+                result = self.state.note_neighbours(node_id, neighbours)
+            elif kind == "mc_flood_scope":
                 self.state.radio_info.update(payload)
             elif kind == "mc_login":
                 node_id, ok = payload
@@ -371,6 +457,7 @@ class MeshService:
         state.device_path = info.get("device") or ""
         state.protocol = info.get("protocol", "meshtastic")
         state.radio_info = dict(info.get("radio") or {})
+        state.stats.record_radio_airtime(state.radio_info)
         state.channels = list(info.get("channels") or [(0, "LongFast")])
         state.max_channels = int(info.get("max_channels") or 8)
         state.local_channels = [
@@ -393,7 +480,12 @@ class MeshService:
             except (ValueError, AttributeError):
                 pass
         if self.store is not None and self.store.enabled:
+            previous = self.store.local_node
+            if previous and state.my_node_id and previous != state.my_node_id:
+                state.clear_observations()
             self.store.local_node = state.my_node_id
+            if previous != state.my_node_id:
+                self._restore_observations()
             # So the next restart's restore can adopt the right scope before
             # the radio has identified itself.
             self.store.set_meta(LAST_OBSERVER, state.my_node_id)
@@ -430,6 +522,11 @@ class MeshService:
                     ts=now, from_id=self.state.my_node_id or "!me", from_name="you",
                     to_id=to_id, text=text, channel=channel, outgoing=True,
                     message_id=message_id, delivery_status=DeliveryStatus.QUEUED.value,
+                    path_hash_size=(destination.path_hash_size
+                                    if isinstance(destination, PeerRef) else None),
+                    route_mode=(destination.route_mode
+                                if isinstance(destination, PeerRef) else
+                                ("flood" if destination.protocol == "meshcore" else "")),
                 )
                 self.state.add_chat(message)
                 self.state.stats.sent += 1

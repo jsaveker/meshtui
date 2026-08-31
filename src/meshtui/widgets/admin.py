@@ -58,11 +58,12 @@ class AdminScreen(Screen[None]):
         Binding("f5", "neighbours", "neighbours"),
     ]
 
-    def __init__(self, state: MeshState, link: Any) -> None:
+    def __init__(self, state: MeshState, link: Any,
+                 target: str | None = None) -> None:
         super().__init__()
         self.state = state
         self.link = link
-        self.target: str | None = None
+        self.target: str | None = target
         self._seen = 0
         # Nodes we have sent a login to but not yet heard an ack from. A login
         # travels back over LoRa and can take 30s, so the UI must distinguish

@@ -16,7 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from .bot import BotRouter, OpenAIResponsesProvider, PathBot, TestBot
+from .bot import BotRouter, OpenAIResponsesProvider, PathBot, TelemetryBot, TestBot
 from .events import connected_info, event_from_wire, event_to_wire, node_record
 from .meshcore_link import MeshCoreLink, probe_meshcore
 from .model import ChannelRef, DeliveryStatus, DestinationRef, PeerRef, SendReceipt
@@ -131,6 +131,8 @@ class Gateway:
                  test_bot: TestBot | None = None,
                  map_uploader: Any | None = None,
                  weather_bot: Any | None = None,
+                 telemetry_bot: TelemetryBot | None = None,
+                 event_sinks: list[Any] | None = None,
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
@@ -149,12 +151,16 @@ class Gateway:
         self.test_bot = test_bot
         self.map_uploader = map_uploader
         self.weather_bot = weather_bot
+        self.telemetry_bot = telemetry_bot
+        self.event_sinks = list(event_sinks or ())
+        self._sinks_started = False
         self.service.attach_link(link)
         self.service.add_listener(self._log_event)
         self.service.add_listener(self._broadcast)
-        for bot in (bot_router, path_bot, test_bot, map_uploader):
-            if bot is not None:
-                self.service.add_listener(bot.handle_event)
+        for observer in (bot_router, path_bot, test_bot, map_uploader, telemetry_bot,
+                         *self.event_sinks):
+            if observer is not None:
+                self.service.add_listener(observer.handle_event)
 
     @staticmethod
     def _log_event(kind: str, payload: Any) -> None:
@@ -273,6 +279,11 @@ class Gateway:
         server.gateway = self  # type: ignore[attr-defined]
         os.chmod(self.socket_path, 0o600)
         self._server = server
+        for sink in self.event_sinks:
+            start = getattr(sink, "start", None)
+            if start is not None:
+                start()
+        self._sinks_started = True
         self._link_thread = threading.Thread(
             target=self._radio_loop, name="gateway-radio", daemon=True)
         self._link_thread.start()
@@ -295,8 +306,13 @@ class Gateway:
             self._serving.clear()
 
     def _retry_loop(self) -> None:
+        last_snapshot = time.monotonic()
         while not self._stop.wait(1.0):
             self.service.process_outbox()
+            now = time.monotonic()
+            if now - last_snapshot >= 60.0:
+                self.service.persist_snapshot()
+                last_snapshot = now
 
     # How long the radio may stay disconnected before the watchdog resets its
     # USB device, and the poll cadence. Class attributes so tests can shrink
@@ -369,6 +385,7 @@ class Gateway:
         if self._retry_thread is not None:
             self._retry_thread.join(timeout=2.0)
             self._retry_thread = None
+        self.service.persist_snapshot()
         with self._subs_lock:
             subscribers, self._subscribers = list(self._subscribers), []
         for events in subscribers:
@@ -387,6 +404,16 @@ class Gateway:
         if self.map_uploader is not None:
             self.service.remove_listener(self.map_uploader.handle_event)
             self.map_uploader.close()
+        if self.telemetry_bot is not None:
+            self.service.remove_listener(self.telemetry_bot.handle_event)
+            self.telemetry_bot.close()
+        for sink in self.event_sinks:
+            self.service.remove_listener(sink.handle_event)
+            if self._sinks_started:
+                close = getattr(sink, "close", None)
+                if close is not None:
+                    close()
+        self._sinks_started = False
         if self._owns_socket:
             try:
                 if self.socket_path.exists():
@@ -418,12 +445,18 @@ class Gateway:
         command = request.get("command")
         if command == "status":
             pending = sum(not item.terminal for item in self.service.outbox.values())
+            integrations = []
+            for sink in self.event_sinks:
+                status = getattr(sink, "status", None)
+                if status is not None:
+                    integrations.append(status())
             return {
                 "ok": True, "connected": self.service.state.connected,
                 "protocol": self.service.state.protocol,
                 "node_id": self.service.state.my_node_id,
                 "device": self.service.state.device_path,
                 "outbox_pending": pending,
+                "integrations": integrations,
             }
         if command == "paths":
             # History for the TUI's paths explorer: a gateway-attached client
@@ -443,9 +476,68 @@ class Gateway:
             if snapshot is None:
                 return {"ok": False, "error": f"unknown message id {message_id}"}
             return {"ok": True, **snapshot}
+        if command == "trace":
+            target = str(request.get("to") or "").strip()
+            if not target:
+                return {"ok": False, "error": "trace requires a target node id"}
+            try:
+                hop_limit = max(1, min(7, int(request.get("hop_limit") or 5)))
+                self.link.request_traceroute(target, hop_limit)
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True}
+        if command == "scope":
+            if self.service.state.protocol != "meshcore":
+                return {"ok": False, "error": "flood scopes require a MeshCore gateway"}
+            action = str(request.get("action") or "get").casefold()
+            try:
+                if action == "get":
+                    self.link.request_flood_scope()
+                elif action in ("session", "default"):
+                    self.link.set_flood_scope(
+                        str(request.get("scope") or ""), save_default=(action == "default"))
+                elif action == "unscoped":
+                    self.link.set_flood_scope("*", force_unscoped=True)
+                else:
+                    raise ValueError("scope action must be get, session, default, or unscoped")
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True}
+        if command == "admin":
+            if self.service.state.protocol != "meshcore":
+                return {"ok": False, "error": "remote admin requires a MeshCore gateway"}
+            action = str(request.get("action") or "").casefold()
+            target = str(request.get("to") or "").strip()
+            if not target:
+                return {"ok": False, "error": "admin request requires a target node id"}
+            try:
+                if action == "login":
+                    password = request.get("password")
+                    if not isinstance(password, str) or not password:
+                        raise ValueError("login requires a password")
+                    self.link.login(target, password)
+                elif action == "logout":
+                    self.link.logout(target)
+                elif action == "command":
+                    text = str(request.get("text") or "").strip()
+                    if not text or len(text.encode("utf-8")) > 200:
+                        raise ValueError("admin command must be 1-200 UTF-8 bytes")
+                    self.link.remote_command(target, text)
+                elif action == "status":
+                    self.link.request_status(target)
+                elif action == "telemetry":
+                    self.link.request_telemetry(target)
+                elif action == "neighbours":
+                    self.link.request_neighbours(target)
+                else:
+                    raise ValueError(
+                        "admin action must be login, logout, command, status, telemetry, or neighbours")
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True}
         if command != "send":
             return {"ok": False, "error":
-                    "supported commands: status, delivery, paths, send, subscribe"}
+                    "supported commands: status, delivery, paths, trace, scope, admin, send, subscribe"}
         text = request.get("text")
         if not isinstance(text, str) or not text.strip():
             return {"ok": False, "error": "text must not be empty"}
@@ -492,7 +584,20 @@ class Gateway:
                     expected = f"!{public_key[:8]}"
                     if target.casefold() != expected:
                         raise ValueError(f"node id does not match public key prefix {expected}")
-                destination = PeerRef(protocol, target, public_key)
+                route_mode = str(request.get("route_mode") or "auto").casefold()
+                if route_mode not in ("auto", "flood", "direct"):
+                    raise ValueError("route_mode must be auto, flood, or direct")
+                if route_mode != "auto" and protocol != "meshcore":
+                    raise ValueError("route_mode overrides are MeshCore only")
+                hash_size = request.get("path_hash_size")
+                if hash_size is not None:
+                    try:
+                        hash_size = int(hash_size)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("path_hash_size must be 1, 2, 3, or 4") from exc
+                    if hash_size not in (1, 2, 3, 4):
+                        raise ValueError("path_hash_size must be 1, 2, 3, or 4")
+                destination = PeerRef(protocol, target, public_key, route_mode, hash_size)
             elif kind == "channel":
                 destination = self._channel_ref(request.get("channel"), protocol)
             else:
@@ -637,6 +742,10 @@ class GatewayLink(RadioLink):
             request["to"] = destination.node_id
             if destination.public_key:
                 request["public_key"] = destination.public_key
+            if destination.route_mode != "auto":
+                request["route_mode"] = destination.route_mode
+            if destination.path_hash_size is not None:
+                request["path_hash_size"] = destination.path_hash_size
         else:
             request["kind"] = "channel"
             request["channel"] = destination.index
@@ -661,7 +770,52 @@ class GatewayLink(RadioLink):
                            detail=str(result.get("detail") or ""))
 
     def request_traceroute(self, dest: str, hop_limit: int = 5) -> None:
-        self.emit("error", "traceroute is not available through a gateway")
+        self._control({"command": "trace", "to": dest, "hop_limit": hop_limit},
+                      "trace request")
+
+    def request_flood_scope(self) -> None:
+        self._control({"command": "scope", "action": "get"}, "scope request")
+
+    def set_flood_scope(self, scope: str, *, save_default: bool = False,
+                        force_unscoped: bool = False) -> None:
+        action = "unscoped" if force_unscoped else ("default" if save_default else "session")
+        self._control({"command": "scope", "action": action, "scope": scope},
+                      "scope change")
+
+    def login(self, node_id: str, password: str) -> None:
+        self._control({"command": "admin", "action": "login", "to": node_id,
+                       "password": password}, "login request")
+
+    def logout(self, node_id: str) -> None:
+        self._control({"command": "admin", "action": "logout", "to": node_id},
+                      "logout request")
+
+    def remote_command(self, node_id: str, command: str) -> None:
+        self._control({"command": "admin", "action": "command", "to": node_id,
+                       "text": command}, "admin command")
+
+    def request_status(self, node_id: str) -> None:
+        self._control({"command": "admin", "action": "status", "to": node_id},
+                      "status request")
+
+    def request_telemetry(self, node_id: str) -> None:
+        self._control({"command": "admin", "action": "telemetry", "to": node_id},
+                      "telemetry request")
+
+    def request_neighbours(self, node_id: str) -> None:
+        self._control({"command": "admin", "action": "neighbours", "to": node_id},
+                      "neighbours request")
+
+    def _control(self, request: dict[str, Any], label: str) -> bool:
+        try:
+            result = request_gateway(request, self.socket_path)
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            self.emit("error", f"gateway {label} failed: {exc}")
+            return False
+        if not result.get("ok"):
+            self.emit("error", str(result.get("error") or f"gateway refused {label}"))
+            return False
+        return True
 
 
 def choose_gateway_link(emit, *, port: str | None = None, host: str | None = None,
@@ -689,6 +843,19 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   pathbot_channel: str | int | None = None,
                   testbot_channel: str | int | None = None,
                   testbot_location: str = "",
+                  telemetry_bot_nodes: list[str] | tuple[str, ...] = (),
+                  telemetry_bot_trigger: str = "!mesh",
+                  telemetry_bot_position: bool = False,
+                  mqtt_config: Any | None = None,
+                  mqtt_client: Any | None = None,
+                  plugin_dir: Path | str | None = None,
+                  notify_nodes: list[str] | tuple[str, ...] = (),
+                  notify_trace_failures: bool = False,
+                  notify_desktop: bool = False,
+                  ntfy_topic: str | None = None,
+                  ntfy_url: str = "https://ntfy.sh",
+                  ntfy_token: str | None = None,
+                  notify_active_seconds: float = 900.0,
                   map_upload: bool = False,
                   weatherbot_channel: str | int | None = None,
                   weatherbot_times: str = "07:00,12:00,18:00",
@@ -706,6 +873,36 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
     path_bot = PathBot(service, channel=pathbot_channel) if pathbot_channel is not None else None
     test_bot = (TestBot(service, channel=testbot_channel, location=testbot_location)
                 if testbot_channel is not None else None)
+    telemetry_bot = (TelemetryBot(
+        service, allowed_nodes=telemetry_bot_nodes, trigger=telemetry_bot_trigger,
+        include_position=telemetry_bot_position)
+        if telemetry_bot_nodes else None)
+    event_sinks: list[Any] = []
+    mqtt_sink = None
+    if mqtt_config is not None:
+        from .ha_mqtt import HomeAssistantMQTT
+        mqtt_sink = HomeAssistantMQTT(service, mqtt_config, client=mqtt_client)
+        event_sinks.append(mqtt_sink)
+    if plugin_dir is not None:
+        from .plugins import PluginManager
+        event_sinks.append(PluginManager(service, plugin_dir or None))
+    if notify_nodes or notify_trace_failures:
+        from .notifications import (DesktopNotifier, NotificationBus,
+                                    NtfyNotifier)
+        notifiers = []
+        if notify_desktop:
+            notifiers.append(DesktopNotifier())
+        if ntfy_topic:
+            notifiers.append(NtfyNotifier(ntfy_topic, ntfy_url, ntfy_token))
+        if mqtt_sink is not None:
+            notifiers.append(mqtt_sink)
+        if not notifiers:
+            raise ValueError("notification rules need --notify-desktop, --ntfy-topic, "
+                             "or --mqtt-host")
+        event_sinks.append(NotificationBus(
+            service, named_nodes=notify_nodes,
+            trace_failures=notify_trace_failures, notifiers=notifiers,
+            active_seconds=notify_active_seconds))
     map_uploader = None
     if map_upload:
         from .mapupload import MapUploader
@@ -718,5 +915,13 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         from .weatherbot import WeatherBot
         weather_bot = WeatherBot(service, channel=weatherbot_channel,
                                  times=weatherbot_times, location=testbot_location)
-    return Gateway(service, link, socket_path, router, path_bot, test_bot,
-                   map_uploader, weather_bot)
+    return Gateway(
+        service, link, socket_path,
+        bot_router=router,
+        path_bot=path_bot,
+        test_bot=test_bot,
+        map_uploader=map_uploader,
+        weather_bot=weather_bot,
+        telemetry_bot=telemetry_bot,
+        event_sinks=event_sinks,
+    )

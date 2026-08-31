@@ -10,17 +10,27 @@ Screen {
     color: $text;
 }
 
-#main {
+#workspace {
     height: 1fr;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 1fr 1fr;
+    grid-gutter: 0;
 }
 
-#left {
-    width: 64;
-    min-width: 34;
+#workspace.layout-radio {
+    grid-columns: 3fr 2fr;
+    grid-rows: 1fr 2fr;
 }
 
-#right {
-    width: 1fr;
+#workspace.layout-chat {
+    grid-columns: 2fr 3fr;
+    grid-rows: 1fr 1fr;
+}
+
+#workspace.layout-route {
+    grid-columns: 2fr 3fr;
+    grid-rows: 2fr 3fr;
 }
 
 NodeTable {
@@ -32,18 +42,58 @@ NodeTable {
 }
 
 StatsPane {
-    height: 13;
-    border: round $primary;
-    border-title-align: left;
-    padding: 0 1;
+    display: none;
 }
 
 PacketFeed {
-    height: 2fr;
-    border: round $primary;
+    height: 3fr;
+    border: none;
     border-title-align: left;
     padding: 0;
     scrollbar-size-vertical: 1;
+}
+
+PacketWorkbench, RoutePane {
+    height: 1fr;
+    width: 1fr;
+    border: round $primary;
+    border-title-align: left;
+}
+
+#packet-hex {
+    height: 2fr;
+    min-height: 7;
+    padding: 0 1;
+    background: $panel 45%;
+    overflow: hidden;
+}
+
+#route-chain {
+    height: auto;
+    max-height: 4;
+    padding: 0 1;
+    background: $panel 45%;
+}
+
+#route-canvas {
+    height: 1fr;
+    min-height: 5;
+    padding: 0 1;
+    border: none;
+}
+
+#route-hops {
+    height: 8;
+    min-height: 4;
+    border: none;
+    scrollbar-size-vertical: 1;
+}
+
+#route-prefix {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+    background: $panel 45%;
 }
 
 PacketFeed > .datatable--cursor {
@@ -76,9 +126,115 @@ ChatPane {
 NodeTable:focus,
 StatsPane:focus,
 PacketFeed:focus,
-ChatPane:focus-within {
+ChatPane:focus-within,
+PacketWorkbench:focus-within,
+RoutePane:focus-within {
     border: round $accent;
 }
+
+CommandPalette {
+    align: center top;
+    padding-top: 3;
+    background: $surface 65%;
+}
+
+#palette-box {
+    width: 82;
+    height: 22;
+    border: tall $accent;
+    background: $panel;
+    padding: 0 1;
+}
+
+#palette-title {
+    height: 2;
+    padding: 0 1;
+    color: $text;
+    text-style: bold;
+}
+
+#palette-input {
+    height: 3;
+    border: tall $primary;
+}
+
+#palette-results {
+    height: 1fr;
+    border: none;
+    scrollbar-size-vertical: 1;
+}
+
+#palette-help {
+    height: 1;
+    color: $text-muted;
+}
+
+ScopeScreen {
+    align: center middle;
+    background: $surface 65%;
+}
+
+#scope-box {
+    width: 88;
+    height: auto;
+    max-height: 18;
+    border: heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#scope-title {
+    height: 2;
+    color: $accent;
+    text-style: bold;
+}
+
+#scope-current, #scope-help {
+    height: auto;
+    margin: 1 0;
+}
+
+#scope-actions {
+    height: 3;
+    margin-top: 1;
+}
+
+#scope-actions Button {
+    width: 1fr;
+    margin-right: 1;
+}
+
+RoomScreen { background: $surface; }
+
+#room-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+}
+
+#room-main { height: 1fr; }
+
+#room-list {
+    width: 34;
+    height: 1fr;
+    border: round $primary;
+}
+
+#room-right { width: 1fr; }
+
+#room-posts {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#room-login-row, #room-post-row { height: 3; }
+
+#room-password, #room-post { width: 1fr; }
+
+#room-login { width: 20; }
+
+#room-logout, #room-send { width: 12; }
 
 NodeDetail {
     align: center middle;
@@ -355,11 +511,25 @@ ChatScreen { background: $surface; }
     scrollbar-size-vertical: 1;
 }
 
+#ov-compose {
+    height: 5;
+}
+
 #ov-input {
-    height: 3;
+    width: 1fr;
+    height: 5;
     border: round $primary-darken-2;
     background: $surface;
     padding: 0 1;
 }
 
 #ov-input:focus { background: $boost; }
+
+#ov-preview {
+    width: 48;
+    height: 5;
+    border: round $primary-darken-2;
+    background: $panel;
+    padding: 0 1;
+    overflow: hidden;
+}

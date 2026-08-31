@@ -15,6 +15,7 @@ from textual.widgets import DataTable
 
 from ..model import Packet, port_label
 from ..state import MeshState
+from ..watch import WatchFilter, parse_watch
 
 MAX_ROWS = 2000
 
@@ -45,12 +46,16 @@ class PacketFeed(DataTable):
         self._pending: list[Packet] = []
         self._rows: list[Packet] = []
         self._seq = 0
+        self.watch_filter: WatchFilter | None = None
+        self.watch_name: str = ""
 
     def on_mount(self) -> None:
         self.add_column("line", key="line")
 
     @property
     def filter_name(self) -> str:
+        if self.watch_filter is not None:
+            return self.watch_name or self.watch_filter.expression
         return FILTERS[self.filter_index][0]
 
     # ------------------------------------------------------------- scrolling
@@ -87,13 +92,45 @@ class PacketFeed(DataTable):
         row = self._rows[self.cursor_row]
         return row if isinstance(row, Packet) else None
 
+    def latest_packet(self) -> Packet | None:
+        """Return the newest packet even when the cursor is on a notice row."""
+        return next((row for row in reversed(self._rows)
+                     if isinstance(row, Packet)), None)
+
     # --------------------------------------------------------------- content
 
     def _passes(self, packet: Packet) -> bool:
+        if self.watch_filter is not None:
+            return self.watch_filter.matches(packet, self.app.state)  # type: ignore[attr-defined]
         return bool(FILTERS[self.filter_index][1](packet))
 
     def cycle_filter(self, state: MeshState) -> str:
+        self.watch_filter = None
+        self.watch_name = ""
         self.filter_index = (self.filter_index + 1) % len(FILTERS)
+        self.rerender(state)
+        return self.filter_name
+
+    def set_filter(self, name: str, state: MeshState) -> str | None:
+        """Select a built-in filter by its full name or an unambiguous prefix."""
+        wanted = name.strip().casefold()
+        matches = [i for i, (label, _) in enumerate(FILTERS)
+                   if label.casefold() == wanted]
+        if not matches:
+            matches = [i for i, (label, _) in enumerate(FILTERS)
+                       if label.casefold().startswith(wanted)]
+        if len(matches) != 1:
+            return None
+        self.watch_filter = None
+        self.watch_name = ""
+        self.filter_index = matches[0]
+        self.rerender(state)
+        return self.filter_name
+
+    def set_watch(self, expression: str, state: MeshState,
+                  name: str = "") -> str:
+        self.watch_filter = parse_watch(expression)
+        self.watch_name = name
         self.rerender(state)
         return self.filter_name
 

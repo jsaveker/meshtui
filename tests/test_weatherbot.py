@@ -37,10 +37,10 @@ class FakeService:
         self.state = MeshState()
         self.state.protocol = "meshcore"
         self.state.channels = [(0, "Public"), (13, "#wx")]
-        self.state.my_node_id = "!2935ec59"
-        self.state.my_node_name = "Tachyon Home"
-        me = self.state.upsert_node({"user": {"id": "!2935ec59"},
-                                     "position": {"latitude": 30.34, "longitude": -97.92}})
+        self.state.my_node_id = "!c0decafe"
+        self.state.my_node_name = "Base Station"
+        me = self.state.upsert_node({"user": {"id": "!c0decafe"},
+                                     "position": {"latitude": 0.30, "longitude": 0.30}})
         me.is_self = True
         self.store = FakeStore()
         self.sent = []
@@ -50,19 +50,19 @@ class FakeService:
 
 
 service = FakeService()
-bot = WeatherBot(service, channel="#wx", location="Steiner Ranch")
+bot = WeatherBot(service, channel="#wx", location="Field Site")
 
 # ------------------------------------------------------------------ compose
 report = bot.compose(OPEN_METEO_SAMPLE)
 check("report speaks the channel's dialect",
-      report, "[Steiner Ranch] 94F (feels 101F), Humidity 41%, Wind S 8mph, "
+      report, "[Field Site] 94F (feels 101F), Humidity 41%, Wind S 8mph, "
               "partly cloudy | Hi 99F Lo 75F, rain 20%")
 check("report fits one LoRa payload",
       payload_bytes(report) <= protocol_payload_limit("meshcore"), True)
 mild = dict(OPEN_METEO_SAMPLE, current=dict(OPEN_METEO_SAMPLE["current"],
                                             apparent_temperature=95.0))
 check("feels-like is omitted when it matches the temperature",
-      bot.compose(mild).startswith("[Steiner Ranch] 94F, Humidity"), True)
+      bot.compose(mild).startswith("[Field Site] 94F, Humidity"), True)
 
 # ----------------------------------------------------------------- schedule
 check("times parse and sort", parse_times("18:00, 07:00,12:30,junk,25:00"),

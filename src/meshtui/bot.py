@@ -103,7 +103,7 @@ def _take_utf8(text: str, limit: int) -> tuple[str, str]:
 
 
 def split_mesh_text(text: str, limit: int, max_chunks: int = 3,
-                    prefix: str = "[AI] ") -> list[str]:
+                    prefix: str = "[AI] ", multipart_label: str = "AI") -> list[str]:
     """Split without cutting UTF-8, bounded so one prompt cannot flood RF."""
     max_chunks = max(1, max_chunks)
     clean = " ".join(text.split()).strip()
@@ -114,8 +114,9 @@ def split_mesh_text(text: str, limit: int, max_chunks: int = 3,
         return [single]
     chunks: list[str] = []
     remaining = clean
-    # Reserve enough room for `[AI 1/3] `, even when fewer chunks result.
-    body_limit = max(1, limit - len("[AI 3/3] ".encode("utf-8")))
+    multipart_label = _slug_label(multipart_label)
+    # Reserve enough room for `[LABEL 1/3] `, even when fewer chunks result.
+    body_limit = max(1, limit - len(f"[{multipart_label} 3/3] ".encode("utf-8")))
     while remaining and len(chunks) < max_chunks:
         piece, remaining = _take_utf8(remaining, body_limit)
         # Prefer a word boundary but never produce an empty chunk.
@@ -131,7 +132,13 @@ def split_mesh_text(text: str, limit: int, max_chunks: int = 3,
         chunks[-1], _ = _take_utf8(chunks[-1], room)
         chunks[-1] = chunks[-1].rstrip() + suffix
     count = len(chunks)
-    return [f"[AI {idx}/{count}] {chunk}" for idx, chunk in enumerate(chunks, 1)]
+    return [f"[{multipart_label} {idx}/{count}] {chunk}"
+            for idx, chunk in enumerate(chunks, 1)]
+
+
+def _slug_label(value: str) -> str:
+    clean = "".join(char for char in value.upper() if char.isalnum() or char in "_-")
+    return clean[:12] or "MSG"
 
 
 class BotRouter:
@@ -394,7 +401,7 @@ class TestBot(PathBot):
 
     A #testing channel exists to answer one question - "did anyone hear me,
     and from how far?" - so every station that responds gives the tester one
-    more data point: '@[Name] 3 hops to Tachyon Home'. Answers only messages
+    more data point: '@[Name] 3 hops to Base Station'. Answers only messages
     that look like tests (the channel also carries human chatter and
     reactions, which deserve no robot reply), under the same good-neighbor
     rules as the pathbot.
@@ -410,7 +417,7 @@ class TestBot(PathBot):
                          cooldown_seconds=cooldown_seconds,
                          max_requests_per_hour=max_requests_per_hour)
         # A node name says who answered; a place name says where the signal
-        # reached - "Tachyon Home (Steiner Ranch)" tells the tester both.
+        # reached - "Base Station (Field Site)" tells the tester both.
         self.location = location.strip()
 
     def _eligible(self, message: ChatMessage) -> bool:
@@ -465,3 +472,162 @@ class TestBot(PathBot):
             text = self._compose_reply(head, obs, limit, tail_sep=":")
         log.info("testbot: %s", text)
         return [self.service.send_message(text, destination)]
+
+
+class _TelemetryProvider:
+    """Satisfy BotRouter's shape; TelemetryBot never calls an AI provider."""
+
+    def generate(self, prompt: str, *, sender: str, conversation: str) -> str:
+        raise RuntimeError("the telemetry bot has no external provider")
+
+
+def _short_age(seconds: float | None) -> str:
+    if seconds is None:
+        return "never"
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+class TelemetryBot(BotRouter):
+    """A local, deterministic telemetry bot for explicitly allowed DM peers.
+
+    It intentionally has no channel mode, Home Assistant access, tools, or
+    arbitrary query language. It exposes only the mesh state the gateway
+    already renders, and only when a configured peer sends the configured
+    command prefix in a direct message.
+    """
+
+    def __init__(self, service: MeshService, *, allowed_nodes: list[str] | tuple[str, ...],
+                 trigger: str = "!mesh", include_position: bool = False,
+                 cooldown_seconds: float = 2.0) -> None:
+        allowed = {str(node).strip().casefold() for node in allowed_nodes if str(node).strip()}
+        if not allowed:
+            raise ValueError("telemetry bot requires at least one allowed node id")
+        trigger = trigger.strip()
+        if not trigger or trigger.split() != [trigger]:
+            raise ValueError("telemetry bot trigger must be one non-empty token")
+        super().__init__(service, _TelemetryProvider(), channel=-1, trigger=trigger,
+                         cooldown_seconds=cooldown_seconds)
+        self.allowed_nodes = allowed
+        self.include_position = include_position
+
+    def _eligible(self, message: ChatMessage) -> bool:
+        if message.outgoing or not message.is_dm:
+            return False
+        if message.from_id.casefold() not in self.allowed_nodes:
+            return False
+        if message.to_id != self.service.state.my_node_id:
+            return False
+        first = message.text.strip().split(maxsplit=1)[0] if message.text.strip() else ""
+        return first.casefold() == self.trigger.casefold()
+
+    def route(self, message: ChatMessage) -> list:
+        if not self._eligible(message):
+            return []
+        fingerprint = self._fingerprint(message)
+        if not self._claim(fingerprint) or not self._within_rate_limit(message.from_id):
+            return []
+        query = message.text.strip()[len(self.trigger):].strip()
+        with self.service.lock:
+            reply = self._answer(query)
+            protocol = self.service.state.protocol
+        destination = PeerRef(protocol, message.from_id)
+        limit = protocol_payload_limit(protocol)
+        chunks = split_mesh_text(reply, limit, self.max_chunks,
+                                 prefix="[MESH] ", multipart_label="MESH")
+        receipts = []
+        for chunk in chunks:
+            receipts.append(self.service.send_message(chunk, destination))
+        log.info("telemetry bot answered %s with %d packet(s)", message.from_id, len(receipts))
+        return receipts
+
+    def _answer(self, query: str) -> str:
+        command, _, argument = query.partition(" ")
+        command = command.casefold()
+        argument = argument.strip()
+        if command in ("", "help", "?"):
+            return (f"{self.trigger} commands: status | nodes | node <name-or-id>. "
+                    "Replies contain gateway mesh telemetry only.")
+        if command in ("status", "health"):
+            return self._status()
+        if command in ("nodes", "active"):
+            return self._nodes()
+        if command in ("node", "sensor", "sensors"):
+            if not argument:
+                return f"usage: {self.trigger} node <name-or-id>"
+            found, error = self._find_node(argument)
+            return error or self._node_detail(found)
+        return f"unknown command {command!r}; send {self.trigger} help"
+
+    def _status(self) -> str:
+        state = self.service.state
+        now = time.time()
+        active = sum(node.last_heard is not None and now - node.last_heard <= 900
+                     for node in state.nodes.values())
+        pending = sum(not item.terminal for item in self.service.outbox.values())
+        link = "connected" if state.connected else "offline"
+        return (f"gateway {link}; {state.protocol or 'mesh'}; "
+                f"nodes {active} active/{len(state.nodes)} known; outbox {pending}")
+
+    def _nodes(self) -> str:
+        now = time.time()
+        nodes = sorted(self.service.state.nodes.values(),
+                       key=lambda node: -(node.last_heard or 0.0))[:12]
+        if not nodes:
+            return "no mesh nodes recorded"
+        pieces = []
+        for node in nodes:
+            age = None if node.last_heard is None else now - node.last_heard
+            signal = "?" if node.snr is None else f"{node.snr:g}dB"
+            pieces.append(f"{node.label} {_short_age(age)} {signal}")
+        return "nodes: " + "; ".join(pieces)
+
+    def _find_node(self, wanted: str):
+        wanted_folded = wanted.strip().casefold()
+        nodes = list(self.service.state.nodes.values())
+        exact = [node for node in nodes if wanted_folded in {
+            node.node_id.casefold(), node.node_id.removeprefix("!").casefold(),
+            node.long_name.casefold(), node.short_name.casefold(),
+        }]
+        if len(exact) == 1:
+            return exact[0], ""
+        partial = [node for node in nodes if wanted_folded and any(
+            wanted_folded in candidate.casefold() for candidate in
+            (node.node_id, node.long_name, node.short_name) if candidate)]
+        if len(partial) == 1:
+            return partial[0], ""
+        if not partial:
+            return None, f"no node matches {wanted!r}"
+        labels = ", ".join(node.label for node in partial[:6])
+        return None, f"ambiguous {wanted!r}: {labels}"
+
+    def _node_detail(self, node) -> str:
+        now = time.time()
+        age = None if node.last_heard is None else now - node.last_heard
+        heard = "never heard" if age is None else f"heard {_short_age(age)} ago"
+        fields = [node.name, heard]
+        if node.snr is not None:
+            fields.append(f"SNR {node.snr:g}dB")
+        if node.rssi is not None:
+            fields.append(f"RSSI {node.rssi}dBm")
+        if node.hops is not None:
+            fields.append(f"{node.hops} hop{'s' if node.hops != 1 else ''}")
+        if node.battery is not None:
+            fields.append(f"battery {node.battery}%")
+        if node.voltage is not None:
+            fields.append(f"{node.voltage:g}V")
+        if node.ch_util is not None:
+            fields.append(f"channel {node.ch_util:g}%")
+        if node.air_util is not None:
+            fields.append(f"airtime {node.air_util:g}%")
+        for key, value in list(node.env.items())[:5]:
+            fields.append(f"{key} {value:g}")
+        if self.include_position and node.lat is not None and node.lon is not None:
+            fields.append(f"position {node.lat:.5f},{node.lon:.5f}")
+        return "; ".join(fields)

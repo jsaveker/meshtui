@@ -41,6 +41,11 @@ class PeerRef:
     # MeshCore uses the full X25519 public key internally.  The UI's !xxxxxxxx
     # label remains useful for display, but must not be the only durable identity.
     public_key: str | None = None
+    # MeshCore-only per-message route intent. "auto" uses the contact's
+    # learned path; flood/direct override it on a copy and never mutate the
+    # radio's stored contact.
+    route_mode: str = "auto"
+    path_hash_size: int | None = None
 
 
 DestinationRef = ChannelRef | PeerRef
@@ -254,6 +259,10 @@ class ChatMessage:
     # repeats arrive over the air, the way the phone apps show it.
     repeated_by: set = field(default_factory=set)
     repeat_pkt: int | None = None
+    # MeshCore operator context rendered as a badge/timeline. Optional keeps
+    # old databases and Meshtastic messages wire-compatible.
+    path_hash_size: int | None = None
+    route_mode: str = ""
 
     @property
     def is_dm(self) -> bool:

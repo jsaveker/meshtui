@@ -54,7 +54,7 @@ check("expanded-key signing matches libsodium byte for byte",
 node = Ed25519PrivateKey.generate()
 node_pub = node.public_key().public_bytes(RAW, PUB)
 ts = int(time.time()).to_bytes(4, "little")
-app_data = bytes([0x92]) + b"Santaluz Solar Repeater"
+app_data = bytes([0x92]) + b"Ridge Solar Repeater"
 advert = node_pub + ts + node.sign(node_pub + ts + app_data) + app_data
 check("a genuine advert verifies", verify_advert(advert), True)
 tampered = bytearray(advert); tampered[-1] ^= 1
@@ -79,7 +79,7 @@ posted = []
 uploader._post = lambda envelope: posted.append(envelope) or True
 
 raw = {"payload_type": 4, "adv_type": 2, "adv_key": node_pub.hex(),
-       "adv_timestamp": int(time.time()), "adv_name": "Santaluz Solar Repeater",
+       "adv_timestamp": int(time.time()), "adv_name": "Ridge Solar Repeater",
        "payload": raw_packet.hex(), "pkt_payload": advert}
 check("a verified repeater advert uploads", uploader.process(dict(raw)), True)
 envelope = posted[-1]

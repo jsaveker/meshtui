@@ -48,7 +48,7 @@ check("duplicate positional names keep their own slot", state.channel_name(1), "
 
 
 print("\nMeshCore production event shapes")
-KEY = "2935ec595f468726c747752a62cb04060fc493da511f3c1fd8055b79106b1555"
+KEY = "c0decafe" + "11" * 28
 emitted = []
 link = MeshCoreLink(lambda kind, payload: emitted.append((kind, payload)))
 link._on_channel_message(types.SimpleNamespace(payload={

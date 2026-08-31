@@ -45,10 +45,10 @@ async def main():
     async with app.run_test(size=(120, 40)) as pilot:
         await asyncio.sleep(1.5)
         store.local_node = app.state.my_node_id or "!test"
-        app.record_admin("!bc20c203", "> login letmein")     # must not be stored
-        app.record_admin("!bc20c203", "** logged in **")
-        app.record_admin("!bc20c203", "> ver")
-        app.record_admin("!bc20c203", "v1.17.1-d929643")
+        app.record_admin("!bcdecafe", "> login letmein")     # must not be stored
+        app.record_admin("!bcdecafe", "** logged in **")
+        app.record_admin("!bcdecafe", "> ver")
+        app.record_admin("!bcdecafe", "v1.17.1-d929643")
         await pilot.pause(1.0)
     store.close()
 

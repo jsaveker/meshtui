@@ -29,7 +29,7 @@ ADV_KEY = "ab" * 32
 # ------------------------------------------------- rx-log advert attribution
 events, link = collect()
 link._on_rx_log(types.SimpleNamespace(payload={
-    "adv_key": ADV_KEY, "adv_name": "Hill Repeater", "adv_lat": 30.3, "adv_lon": -97.9,
+    "adv_key": ADV_KEY, "adv_name": "Hill Repeater", "adv_lat": 10.3, "adv_lon": 20.3,
     "snr": -6.5, "rssi": -102, "route_typename": "FLOOD", "path_len": 2,
     "path": "1a4c", "payload_typename": "ADVERT", "payload_length": 48,
 }))
