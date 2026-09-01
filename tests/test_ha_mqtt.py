@@ -322,15 +322,27 @@ service.state.channels = [(0, "Public"), (14, "sensors")]
 service.send_message = lambda text, dest: (sent_mesh.append((text, dest)) or _Receipt())
 fake_send = FakeMQTT()
 send_config = MQTTConfig(host="mqtt.example.invalid", gateway_id="field station",
-                         refresh_seconds=999, send_channels=("#Sensors",),
+                         refresh_seconds=999, send_channels=(" #Sensors ",),
                          send_min_seconds=2.0)
 check("allowlist names are normalized", send_config.send_channels, ("sensors",))
 send_clock = [now]
 send_bridge = HomeAssistantMQTT(service, send_config, client=fake_send,
-                                clock=lambda: send_clock[0])
+                                clock=lambda: send_clock[0],
+                                rate_clock=lambda: send_clock[0])
 send_bridge.start()
 check("send topic subscribed", fake_send.subscribed,
       [("meshtui/field_station/send", 0)])
+check("send topic visible in gateway status", send_bridge.status()["send_topic"],
+      "meshtui/field_station/send")
+notify_topic = "homeassistant/notify/meshtui_field_station_sensors/config"
+notify_config = json.loads(next(
+    payload for topic, payload, _, _ in fake_send.published if topic == notify_topic))
+check("allowlisted channel discovered as a native HA notify entity",
+      (notify_config["command_topic"], notify_config["default_entity_id"]),
+      ("meshtui/field_station/send", "notify.meshtui_field_station_sensors"))
+check("notify entity publishes structured channel requests",
+      "'text': value" in notify_config["command_template"]
+      and '"sensors"' in notify_config["command_template"], True)
 check("json payload sends",
       send_bridge.handle_send('{"channel": "sensors", "text": "door open"}'), True)
 check("message reached the service", sent_mesh[-1][0], "door open")
@@ -346,8 +358,15 @@ check("non-allowlisted channel refused",
       send_bridge.handle_send('{"channel": "Public", "text": "x"}'), False)
 check("empty text refused", send_bridge.handle_send("   "), False)
 send_clock[0] += 3
+before_malformed = len(sent_mesh)
+check("malformed structured request refused",
+      send_bridge.handle_send('{"channel":"sensors","text":'), False)
+check("malformed request never reaches service", len(sent_mesh), before_malformed)
+check("oversized MQTT request refused",
+      send_bridge.handle_send("x" * (16 * 1024 + 1)), False)
+send_clock[0] += 3
 check("oversize payload truncated, not refused",
-      send_bridge.handle_send("x" * 500), True)
+      send_bridge.handle_send("é" * 500), True)
 check("truncated to the protocol limit", payload_bytes(sent_mesh[-1][0]) <= 133, True)
 fake_quiet = FakeMQTT()
 quiet_bridge = HomeAssistantMQTT(
@@ -356,6 +375,8 @@ quiet_bridge = HomeAssistantMQTT(
 quiet_bridge.start()
 check("no allowlist -> nothing subscribed, radio cannot be keyed",
       fake_quiet.subscribed, [])
+check("disabled send topic is absent from gateway status",
+      quiet_bridge.status()["send_topic"], None)
 send_bridge.close()
 quiet_bridge.close()
 

@@ -9,6 +9,13 @@ dist/
 .venv/
 venv/
 
+# Local credentials and deployment overrides
+.env
+.env.*
+*.env
+compose.override.yaml
+compose.private.yaml
+
 # meshtui runtime artefacts.
 # The database holds real mesh traffic - node IDs, GPS positions of other
 # people's radios, and message content. Never commit one.

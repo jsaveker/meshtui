@@ -26,19 +26,19 @@ state = service.state
 state.protocol = "meshcore"
 state.channels = [(0, "Public"), (4, "sensors")]
 state.my_node_id = "!c0decafe"
-state.my_node_name = "Tachyon Home"
+state.my_node_name = "Base Station"
 now = time.time()
 
 bot = SensorBot(service, channel="#sensors", minutes=30)
 check("no telemetry yet -> nothing to post", bot.compose(), None)
 
 # our own radio battery
-me = state.upsert_node({"user": {"id": "!c0decafe", "longName": "Tachyon Home"},
+me = state.upsert_node({"user": {"id": "!c0decafe", "longName": "Base Station"},
                         "lastHeard": now})
 me.is_self = True
 me.voltage, me.battery = 4.10, 87
 # a repeater with power telemetry (remote status)
-rep = state.upsert_node({"user": {"id": "!bc20c203", "longName": "Santaluz Solar",
+rep = state.upsert_node({"user": {"id": "!bc20c203", "longName": "Hilltop Relay",
                                   "role": "REPEATER"}, "lastHeard": now - 60})
 rep.voltage = 12.9
 # an environment sensor, freshest of all

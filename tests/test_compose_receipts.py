@@ -54,7 +54,7 @@ import time as _time
 broadcast = ChatMessage(ts=_time.time() - 600, from_id="!me", from_name="you",
                         to_id="^all", text="wx", channel=13, outgoing=True,
                         delivery_status=DeliveryStatus.SENT.value,
-                        repeated_by={"Santaluz Solar Repeater"})
+                        repeated_by={"Hilltop Solar Repeater"})
 line = str(_receipt_timeline(broadcast))
 check("a repeated broadcast terminates at its repeats",
       line.endswith("heard 1 repeat") and "waiting" not in line, True)

@@ -296,8 +296,8 @@ flowchart LR
     T[meshtui --gateway] <--> G
     C[meshtui send] --> G
     B[Opt-in bots] --> G
-    G --> M[MQTT broker]
-    M --> H[Home Assistant]
+    G <--> M[MQTT broker]
+    M <--> H[Home Assistant]
 ```
 
 ```sh
@@ -339,6 +339,49 @@ Channel broadcasts stop at `sent`; neither protocol can prove that every listene
 received one. Run the gateway under your service manager for a days-long station,
 with a fixed database and socket path and serial-device permission. Only one
 process can own a radio at a time.
+
+### Containerized gateway and remote TUI
+
+The example Compose service maps one specific serial device into an unprivileged,
+read-only container. It persists the database and places the owner-only gateway
+socket in a host directory. It does not publish a network port or make the send
+API directly reachable from the LAN.
+
+On the Linux host connected to the radio:
+
+```sh
+mkdir -p "$PWD/runtime/data" "$PWD/runtime/run"
+export MESHTUI_UID="$(id -u)"
+export MESHTUI_GID="$(id -g)"
+export MESHTUI_RADIO_DEVICE=/dev/serial/by-id/usb-your-radio
+export MESHTUI_RADIO_GID="$(stat -c '%g' "$MESHTUI_RADIO_DEVICE")"
+export MESHTUI_DATA_DIR="$PWD/runtime/data"
+export MESHTUI_RUN_DIR="$PWD/runtime/run"
+docker compose -f deploy/compose.gateway.example.yaml up -d --build
+docker compose -f deploy/compose.gateway.example.yaml exec gateway \
+  meshtui gateway-status --socket /run/meshtui/gateway.sock
+```
+
+Keep private MQTT settings, channel names, and credentials in a local Compose
+override or environment file outside the repository. Do not make the gateway
+socket available through an unauthenticated TCP proxy: it permits mesh sends.
+
+To run the TUI on another computer, forward the Unix socket through SSH. The same
+command works over a local address or a private overlay-network address:
+
+```sh
+ssh -N -o StreamLocalBindUnlink=yes -o ExitOnForwardFailure=yes \
+  -L /tmp/meshtui-remote.sock:/absolute/host/path/runtime/run/gateway.sock \
+  gateway-host
+
+# In another terminal on the client:
+meshtui gateway-status --socket /tmp/meshtui-remote.sock
+meshtui --gateway /tmp/meshtui-remote.sock
+```
+
+The SSH login must be able to access the remote socket. Leave the tunnel running
+while the TUI is attached; SSH supplies authentication and encryption without
+changing the gateway protocol.
 
 ### Read-only web companion
 
@@ -463,6 +506,82 @@ This is separate from retained Home Assistant state because it includes message
 content. The event stream is normalized and deliberately excludes raw radio
 payload dictionaries, but it should still be enabled only for trusted brokers
 and subscribers.
+
+### Home Assistant notifications to a mesh channel
+
+MQTT-to-radio sends are a separate opt-in. Repeat `--mqtt-send-channel` for
+each channel that broker clients may use; with no allowlist, the gateway does
+not subscribe to a send topic and MQTT cannot key the radio.
+
+```sh
+meshtui gateway --protocol meshcore --port /dev/ttyUSB0 \
+  --mqtt-host mqtt.example.lan \
+  --mqtt-username meshtui \
+  --mqtt-password-env MESHTUI_MQTT_PASSWORD \
+  --mqtt-gateway-id field-station \
+  --mqtt-send-channel '#alerts'
+```
+
+For every allowlisted channel, Home Assistant discovery creates a native
+`notify` entity. An automation can target it with the standard notification
+action:
+
+```yaml
+- action: notify.send_message
+  target:
+    entity_id: notify.meshtui_field_station_alerts
+  data:
+    message: "Backup power is active"
+```
+
+The entity ID follows the configured gateway and channel names; confirm the
+actual ID on the MQTT device page before using it. Keep entity IDs and message
+templates for a particular building in that private Home Assistant instance,
+not in a public checkout.
+
+The raw command topic is `<prefix>/<gateway-id>/send`. Plain text goes to the
+first allowlisted channel. JSON can select one explicitly:
+
+```json
+{"channel":"alerts","text":"Backup power is active"}
+```
+
+This path is designed for compact, low-volume automation results. Requests to
+other channels, empty or malformed structured requests, and messages arriving
+faster than `--mqtt-send-seconds` are dropped. Accepted text is truncated on a
+UTF-8 boundary to the radio protocol's frame limit. MeshCore text frames carry
+at most 133 UTF-8 bytes, which is not necessarily 133 characters. Use QoS 0 and
+never retain command messages: reconnecting clients must not replay an old
+alert onto RF.
+
+You can also send a periodic summary of selected Home Assistant sensors while
+keeping the selection private. Replace these placeholder entity IDs only in
+your Home Assistant automation:
+
+```yaml
+alias: Mesh hourly indoor climate summary
+triggers:
+  - trigger: time_pattern
+    minutes: "5"
+conditions: []
+actions:
+  - action: notify.send_message
+    target:
+      entity_id: notify.meshtui_field_station_alerts
+    data:
+      message: >-
+        Indoor {{ states('sensor.indoor_temperature') }}
+        {{ state_attr('sensor.indoor_temperature', 'unit_of_measurement') }};
+        RH {{ states('sensor.indoor_humidity') }}%
+mode: single
+```
+
+Each accepted message is real LoRa airtime. Prefer hourly or exception-driven
+summaries over motion-level traffic. The RF channel may be encrypted, but the
+broker still sees the command payload unless the MQTT connection uses TLS.
+Within MeshTUI's topic tree, restrict broker ACLs so Home Assistant can write
+only the send topic and the gateway can read only that command path; grant only
+the corresponding state/discovery permissions each client needs.
 
 ### Companion telemetry bot
 

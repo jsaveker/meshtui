@@ -1,0 +1,39 @@
+services:
+  gateway:
+    build:
+      context: ..
+    image: meshtui:local
+    init: true
+    restart: unless-stopped
+    user: "${MESHTUI_UID:-1000}:${MESHTUI_GID:-1000}"
+    group_add:
+      - "${MESHTUI_RADIO_GID:?set MESHTUI_RADIO_GID to the serial device group ID}"
+    devices:
+      - "${MESHTUI_RADIO_DEVICE:?set MESHTUI_RADIO_DEVICE to the serial device path}:/dev/mesh-radio"
+    volumes:
+      - "${MESHTUI_DATA_DIR:?set MESHTUI_DATA_DIR to an absolute directory}:/data"
+      - "${MESHTUI_RUN_DIR:?set MESHTUI_RUN_DIR to an absolute directory}:/run/meshtui"
+    command:
+      - gateway
+      - --protocol
+      - meshcore
+      - --port
+      - /dev/mesh-radio
+      - --db
+      - /data/mesh.db
+      - --socket
+      - /run/meshtui/gateway.sock
+    healthcheck:
+      test: ["CMD", "meshtui", "gateway-status", "--socket", "/run/meshtui/gateway.sock"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 12s

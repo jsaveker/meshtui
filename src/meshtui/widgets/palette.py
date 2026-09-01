@@ -68,7 +68,7 @@ class CommandPalette(ModalScreen[None]):
         return rows
 
     def _node_rows(self, terms: list[str]) -> list[tuple[str, str]]:
-        """Live nodes matching the query, so 'santaluz' is a runnable hit.
+        """Live nodes matching the query, so 'ridge' is a runnable hit.
 
         A palette that only searches its own command templates makes the
         operator type node names blind; the whole point is finding things.
@@ -118,7 +118,7 @@ class CommandPalette(ModalScreen[None]):
         first = value.split()[0].casefold() if value else ""
         if row and "<" not in row[0] and first not in COMMAND_WORDS:
             # The typed text is a search, not a command - run the
-            # highlighted hit ('santaluz' + enter jumps to the node).
+            # highlighted hit ('ridge' + enter jumps to the node).
             value = row[0]
         elif not value and row:
             value = row[0].split()[0] if "<" in row[0] else row[0]

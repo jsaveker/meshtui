@@ -29,6 +29,10 @@ from .service import MeshService
 
 log = logging.getLogger(__name__)
 
+# MQTT brokers can accept payloads far larger than a LoRa frame. Bound work in
+# paho's callback thread before decoding or parsing an untrusted request.
+MQTT_SEND_MAX_REQUEST_BYTES = 16 * 1024
+
 
 def _slug(value: str, fallback: str = "mesh") -> str:
     """Return a stable MQTT/Home Assistant identifier fragment."""
@@ -45,6 +49,19 @@ def _topic_root(value: str, label: str) -> str:
     if not value or any(char in value for char in ("#", "+", "\x00")):
         raise ValueError(f"{label} must be a non-empty MQTT topic without wildcards")
     return value
+
+
+def _channel_key(value: Any) -> str:
+    """Normalize an operator-facing channel name for exact comparisons."""
+    return str(value).strip().lstrip("#").strip().casefold()
+
+
+def _truncate_utf8(value: str, limit: int) -> str:
+    """Fit text to a byte ceiling without splitting a UTF-8 character."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", "ignore")
 
 
 @dataclass(frozen=True)
@@ -87,8 +104,7 @@ class MQTTConfig:
         if not math.isfinite(self.refresh_seconds) or self.refresh_seconds <= 0:
             raise ValueError("MQTT refresh interval must be greater than zero")
         normalized = tuple(dict.fromkeys(
-            str(name).lstrip("#").strip().casefold()
-            for name in self.send_channels if str(name).strip().lstrip("#")))
+            key for name in self.send_channels if (key := _channel_key(name))))
         object.__setattr__(self, "send_channels", normalized)
         if not math.isfinite(self.send_min_seconds) or self.send_min_seconds < 0:
             raise ValueError("MQTT send interval must be zero or more seconds")
@@ -189,11 +205,13 @@ class HomeAssistantMQTT:
 
     def __init__(self, service: MeshService, config: MQTTConfig, *,
                  client: Any | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 rate_clock: Callable[[], float] = time.monotonic) -> None:
         self.service = service
         self.config = config
         self.client = client or _paho_client(f"meshtui-{config.gateway_id}")
         self.clock = clock
+        self.rate_clock = rate_clock
         self._connected = False
         self._started = False
         self._stop = threading.Event()
@@ -203,7 +221,7 @@ class HomeAssistantMQTT:
         self._last_error = ""
         self._sends_accepted = 0
         self._sends_dropped = 0
-        self._last_send_ts = 0.0
+        self._last_send_ts: float | None = None
 
     @property
     def availability_topic(self) -> str:
@@ -228,6 +246,7 @@ class HomeAssistantMQTT:
             "nodes_published": len(self._published_nodes),
             "position_enabled": self.config.include_position,
             "events_enabled": self.config.publish_events,
+            "send_topic": self.send_topic if self.config.send_channels else None,
             "send_channels": list(self.config.send_channels),
             "sends_accepted": self._sends_accepted,
             "sends_dropped": self._sends_dropped,
@@ -318,25 +337,38 @@ class HomeAssistantMQTT:
         truncated to what the protocol carries.
         """
         try:
-            self.handle_send(bytes(message.payload).decode("utf-8", "replace"))
+            payload = bytes(message.payload)
+            if len(payload) > MQTT_SEND_MAX_REQUEST_BYTES:
+                self._sends_dropped += 1
+                log.warning("MQTT send request refused: payload is %d bytes", len(payload))
+                return
+            self.handle_send(payload.decode("utf-8", "replace"))
         except Exception:  # noqa: BLE001 - a bad request must not kill paho's loop
             self._sends_dropped += 1
             log.warning("MQTT send request failed", exc_info=True)
 
     def handle_send(self, raw: str) -> bool:
-        import json as _json
         channel_name = self.config.send_channels[0] if self.config.send_channels else None
         text = raw.strip()
+        if len(raw.encode("utf-8")) > MQTT_SEND_MAX_REQUEST_BYTES:
+            self._sends_dropped += 1
+            log.warning("MQTT send request refused: payload exceeds %d bytes",
+                        MQTT_SEND_MAX_REQUEST_BYTES)
+            return False
         if text.startswith("{"):
             try:
-                data = _json.loads(text)
+                data = json.loads(text)
             except ValueError:
-                data = None
-            if isinstance(data, dict):
-                text = str(data.get("text") or data.get("message") or "").strip()
-                requested = str(data.get("channel") or "").lstrip("#").strip().casefold()
-                if requested:
-                    channel_name = requested
+                self._sends_dropped += 1
+                log.warning("MQTT send request refused: malformed JSON object")
+                return False
+            if not isinstance(data, dict):
+                self._sends_dropped += 1
+                return False
+            text = str(data.get("text") or data.get("message") or "").strip()
+            requested = _channel_key(data.get("channel") or "")
+            if requested:
+                channel_name = requested
         if not text or channel_name is None:
             self._sends_dropped += 1
             return False
@@ -344,8 +376,9 @@ class HomeAssistantMQTT:
             self._sends_dropped += 1
             log.warning("MQTT send to %r refused: not an allowlisted channel", channel_name)
             return False
-        now = self.clock()
-        if now - self._last_send_ts < self.config.send_min_seconds:
+        now = self.rate_clock()
+        if (self._last_send_ts is not None
+                and now - self._last_send_ts < self.config.send_min_seconds):
             self._sends_dropped += 1
             log.warning("MQTT send dropped: faster than one per %.0fs",
                         self.config.send_min_seconds)
@@ -360,7 +393,7 @@ class HomeAssistantMQTT:
                     slot, name = int(item[0]), str(item[1])
                 else:
                     slot, name = position, str(item)
-                if name.lstrip("#").casefold() == channel_name:
+                if _channel_key(name) == channel_name:
                     destination = ChannelRef(state.protocol, slot, name)
                     break
             if destination is None:
@@ -368,12 +401,12 @@ class HomeAssistantMQTT:
                 log.warning("MQTT send refused: channel %r not on the radio", channel_name)
                 return False
             limit = protocol_payload_limit(state.protocol)
-            while payload_bytes(text) > limit:
-                text = text[:-1]
+            text = _truncate_utf8(text, limit)
             self._last_send_ts = now
             receipt = self.service.send_message(text, destination)
         self._sends_accepted += 1
-        log.info("mqtt send: %s -> %s (%s)", text, destination.name, receipt.status.value)
+        log.info("MQTT send accepted: %d bytes -> %s (%s)", payload_bytes(text),
+                 destination.name, receipt.status.value)
         return True
 
     def _refresh_loop(self) -> None:
@@ -517,6 +550,45 @@ class HomeAssistantMQTT:
         ):
             self._publish_discovery("gateway", "MeshTUI gateway", metric,
                                     self.gateway_state_topic, gateway=True)
+        for channel_name in self.config.send_channels:
+            self._publish_notify_discovery(channel_name)
+
+    def _publish_notify_discovery(self, channel_name: str) -> None:
+        """Expose one allowlisted channel as a native Home Assistant notifier."""
+        channel_key = _slug(channel_name, "channel")
+        identity = f"{self.config.gateway_id}_gateway"
+        entity_key = f"meshtui_{self.config.gateway_id}_{channel_key}"
+        topic = f"{self.config.discovery_prefix}/notify/{entity_key}/config"
+        # MqttCommandTemplate supplies the notification body as `value`.
+        # Serialize it inside Home Assistant so quotes/newlines remain valid JSON.
+        command_template = (
+            "{{ {'channel': " + json.dumps(channel_name)
+            + ", 'text': value} | tojson }}")
+        document = {
+            "name": f"Mesh channel {channel_name}",
+            "unique_id": entity_key,
+            "default_entity_id": f"notify.{entity_key}",
+            "command_topic": self.send_topic,
+            "command_template": command_template,
+            "availability_topic": self.availability_topic,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "qos": self.config.qos,
+            "retain": False,
+            "device": {
+                "identifiers": [f"meshtui_{identity}"],
+                "name": "MeshTUI gateway",
+                "manufacturer": "MeshTUI",
+                "model": "Gateway",
+            },
+            "origin": {"name": "MeshTUI", "sw_version": "0.1.0",
+                       "support_url": "https://github.com/jsaveker/meshtui"},
+        }
+        payload = self._json(document)
+        if self._discovery_payloads.get(topic) == payload:
+            return
+        self._publish(topic, payload, retain=True)
+        self._discovery_payloads[topic] = payload
 
     def publish_node(self, node: Node) -> None:
         if not self._connected:

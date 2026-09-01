@@ -4,7 +4,7 @@ Every N minutes, post one compact line summarising what the station already
 knows: its own battery, repeater power reported over remote status, and any
 environment telemetry heard on the mesh:
 
-    [sensors] Tachyon 4.10V 87% | Santaluz 12.9V | egrm 25.9C 44%
+    [sensors] Base Station 4.10V 87% | Hilltop Relay 12.9V | Garden 25.9C 44%
 
 Nothing is fetched from the internet and nothing is requested over RF - the
 digest only repeats what arrived anyway, so the bot costs the mesh one

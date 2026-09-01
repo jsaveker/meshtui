@@ -142,6 +142,9 @@ def run_gateway(argv: list[str]) -> int:
     if args.mqtt_password_env and not args.mqtt_host:
         print("--mqtt-password-env requires --mqtt-host", file=sys.stderr)
         return 2
+    if args.mqtt_send_channel and not args.mqtt_host:
+        print("--mqtt-send-channel requires --mqtt-host", file=sys.stderr)
+        return 2
     if args.mqtt_host:
         from .ha_mqtt import MQTTConfig, default_gateway_id
         password = None
