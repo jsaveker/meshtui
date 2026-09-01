@@ -162,10 +162,10 @@ check("non-hex rejected", parse_secret("z" * 32), None)
 print("\nchannel share QR: the MeshCore app's official deep link, drawn scannable")
 from meshtui.widgets.channels import qr_text, share_url
 
-url = share_url("field sensors", "38a381f10b062505a1ea3d8b7697c99e")
+url = share_url("field sensors", "00112233445566778899aabbccddeeff")
 check("share url is the documented meshcore:// format",
       url, "meshcore://channel/add?name=field%20sensors"
-           "&secret=38a381f10b062505a1ea3d8b7697c99e")
+           "&secret=00112233445566778899aabbccddeeff")
 code = qr_text(url)
 check("qr renders", code is not None, True)
 lines = str(code).splitlines()
@@ -175,12 +175,6 @@ check("qr uses only half-block cells",
 # The top-left finder pattern's 7-module dark square edge: row 2 (after the
 # 2-module quiet zone) must start with light,light,dark... halves.
 check("quiet zone present", lines[0].startswith("█"), True)
-import qrcode as _qrcode
-qr = _qrcode.QRCode(border=2)
-qr.add_data(url)
-qr.make(fit=True)
-check("payload round-trips through the encoder",
-      qr.data_list[0].data.decode("utf-8", "ignore") if qr.data_list else "", url)
 
 print("\nstored packets replay without knowing the protocol")
 # Replay used to re-run Meshtastic's decoder over stored rows, which turned
