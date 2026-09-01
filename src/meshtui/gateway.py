@@ -82,7 +82,12 @@ class _RequestHandler(socketserver.StreamRequestHandler):
                 response = self.server.gateway.handle_request(request)  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 response = {"ok": False, "error": str(exc)}
-        self._write_line(response)
+        try:
+            self._write_line(response)
+        except OSError:
+            # The client hung up before reading the reply (a quitting TUI).
+            # Not an error - and socketserver would print a full traceback.
+            pass
 
     def _write_line(self, obj: dict[str, Any]) -> None:
         # default=repr matches Store.add_packet: raw radio dicts can carry

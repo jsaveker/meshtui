@@ -192,6 +192,19 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     check("other client's message rendered",
           any(k == "chat" and p.text == "sent from the phone" for k, p in events), True)
 
+    print("a client that hangs up before reading its reply is not an error")
+    import struct
+    rude = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    rude.connect(str(socket_path))
+    # SO_LINGER 0 -> RST on close, so the gateway's reply write fails hard.
+    rude.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    rude.sendall(b'{"command": "paths"}\n')
+    rude.close()
+    time.sleep(0.3)
+    result = request_gateway({"command": "send", "kind": "channel", "channel": 12,
+                              "text": "after the rude client"}, socket_path)
+    check("gateway still answers after a client hangup", result["ok"], True)
+
     tui_link.stop()
     before_chat = [p.text for k, p in events if k == "chat"]
     before_packets = [p.packet_id for k, p in events if k == "packet"]
