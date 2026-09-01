@@ -120,6 +120,24 @@ async def main() -> int:
         check("palette jumps to a matching node", app.query_one("#nodes").selected_node_id(),
               "!4c000001")
 
+        # A bare name is a search, not a command - live nodes appear as
+        # runnable hits and enter jumps straight to the highlighted one.
+        await pilot.press("slash")
+        await pilot.pause(0.2)
+        field = app.screen.query_one("#palette-input")
+        field.value = "walker"
+        await pilot.pause(0.2)
+        results = app.screen.query_one("#palette-results")
+        check("typing a node name surfaces it as a hit",
+              any("node Walker" in str(results.get_row_at(i)[0])
+                  for i in range(results.row_count)), True)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        check("enter on the hit jumps to that node",
+              app.query_one("#nodes").selected_node_id(), "!aa000001")
+        check("palette closes after running the hit",
+              isinstance(app.screen, CommandPalette), False)
+
     if failures:
         print("\nFAIL:", failures)
         return 1
