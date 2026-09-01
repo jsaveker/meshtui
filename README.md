@@ -25,7 +25,7 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-78dce8?style=flat-square&labelColor=111411"></a>
 </p>
 
-[![MeshTUI dashboard in MeshCore mode with humorous synthetic nodes, decoded packets, mesh statistics, and chat](docs/assets/meshtui-dashboard.png)](docs/assets/meshtui-dashboard.png)
+[![MeshTUI route-focused four-pane operator cockpit with nodes, chat, packet hex, and a selected synthetic MeshCore route](docs/assets/meshtui-dashboard.png)](docs/assets/meshtui-dashboard.png)
 
 <p align="center"><em>The real Textual interface, captured with deterministic synthetic MeshCore data. The radios are fictional; the UI is not.</em></p>
 
@@ -37,12 +37,12 @@ protocol's distinctive capabilities visible.
 
 | | Capability |
 |---|---|
-| **Observe** | Work in four panes—nodes, chat, packet hex, and route/map—with last-heard heat, SNR sparklines, and rolling one-hour airtime. |
-| **Communicate** | Preview wire bytes and route intent before sending, then follow queued → radio sent → repeats → ACK like a mail client. |
-| **Understand routes** | Select traffic to see its ASCII/braille hop chain, map polyline, prefix candidates, round-trip trace, and per-hop SNR. |
+| **Observe** | Work in four panes—nodes, chat, packet hex, and the selected route—with last-heard heat, SNR sparklines, and rolling one-hour airtime. |
+| **Communicate** | Preview wire bytes and route intent before sending. Direct messages can progress from queued → radio sent → repeats → ACK; broadcasts stop at sent and, when available, heard-repeater evidence. |
+| **Understand routes** | Select traffic to see its hop chain, map polyline, prefix candidates, and final-link SNR; run traceroute for outbound/return paths and per-hop SNR. |
 | **Operate remotely** | Authenticate to MeshCore repeaters, merge neighbour tables into the graph, browse room catch-up, and edit flood scope explicitly. |
 | **Automate** | Keep one gateway on the radio and fan it out to TUI/web clients, MQTT, local plugins, notifications, bots, and teaching replays. |
-| **Investigate** | Inspect decoded fields and hex, retain SQLite history, export CSV, and audit Meshtastic traffic against upstream's published channel keys. |
+| **Investigate** | Inspect decoded fields and hex, retain SQLite history, export CSV, review channel exposure in the TUI, and audit captured Meshtastic keys offline. |
 
 ## Protocol support
 
@@ -61,7 +61,8 @@ can always choose explicitly with `--protocol meshcore` or
 | Traceroute and per-hop SNR | ✓ | ✓ |
 | Room post catch-up and flood-scope control | ✓ | — |
 | Relay dependency and mesh health | ✓ | ✓ |
-| Channel security audit | — | ✓ |
+| In-app channel audit | ✓ | ✓ |
+| Offline captured-channel key audit | — | ✓ |
 
 Protocol-specific features stay protocol-specific. MeshTUI does not pretend that a
 MeshCore route is a Meshtastic traceroute, or that a broadcast has an end-to-end
@@ -89,6 +90,8 @@ therefore asynchronous RF traffic rather than an HTTP-style fetch. Signed room
 posts remain grouped under the room thread while showing the original author's
 resolved public-key prefix. Posts use the same durable outbox as direct messages.
 
+[![MeshTUI room-server browser showing retained signed posts from fictional MeshCore rooms](docs/assets/meshtui-rooms.png)](docs/assets/meshtui-rooms.png)
+
 Run `scope` from the command palette to inspect the radio default, apply a
 session-only `#scope`, save a persistent default, or explicitly force unscoped
 flooding. These are separate controls because blank means “use the radio
@@ -97,13 +100,18 @@ carry a visible `F` badge.
 
 ## Operator cockpit
 
-The main screen is always a four-pane workspace: nodes, chat, packet/hex, and
-route/map. `l` cycles balanced, radio, chat, and route-biased layouts; `T` cycles
-phosphor, night-vision, and high-contrast themes. Both choices are stored per
+The main screen is always a four-pane workspace: nodes, chat, packet/hex, and the
+selected route. `l` cycles balanced, radio, chat, and route-biased layouts; `T`
+cycles phosphor, night-vision, and high-contrast themes. Both choices are stored per
 protocol in `~/.config/meshtui/preferences.json`, so a MeshCore deck and a
 Meshtastic station can keep different working arrangements.
 
-Press `/` for the command palette. Useful commands include:
+Press `/` for the searchable command palette. It exposes the operator vocabulary
+without replacing the populated cockpit:
+
+[![MeshTUI slash command palette over the populated four-pane operator cockpit](docs/assets/meshtui-palette.png)](docs/assets/meshtui-palette.png)
+
+Useful commands include:
 
 ```text
 node Hilltop
@@ -124,9 +132,30 @@ Watch expressions are parsed without `eval`; supported fields are `proto`,
 `hop`, `snr`, `chan`, `from`, `to`, `type`, and `text`. Named views, layouts,
 and themes remain local operator preferences and are scoped by protocol.
 
+## Route intelligence
+
+Press `v` to open the observed-path ledger. MeshCore traffic becomes a durable
+record of its origin, path-hash width, resolved repeaters, age, and final-link
+SNR. When the route nodes have positions, the ledger also calculates distance
+and route stretch. Selecting a route draws its hop chain; selecting a hop reveals
+the public-key prefix candidates that could have carried it.
+
+[![MeshTUI observed-path ledger with resolved repeater hops, route stretch, final-link SNR, and a braille route](docs/assets/meshtui-paths.png)](docs/assets/meshtui-paths.png)
+
+Traceroute is kept distinct from passive observation. A completed trace can show
+outbound and return paths with per-hop SNR when the radio reports it; a received
+packet supplies only the final-link SNR.
+
+Press `m` to open the braille position map. Positioned nodes can be shown with
+range rings, direct links, authenticated repeater-neighbour edges, movement
+tracks, and headings. The map can colour nodes by SNR, hop count, or last-heard
+age and supports keyboard pan, zoom, fit, and layer controls.
+
+[![MeshTUI braille position map showing fictional MeshCore nodes, links, movement tracks, and headings](docs/assets/meshtui-map.png)](docs/assets/meshtui-map.png)
+
 ## Chat that behaves like a chat client
 
-[![MeshTUI focused chat view showing synthetic MeshCore channel conversation and repeat status](docs/assets/meshtui-chat.png)](docs/assets/meshtui-chat.png)
+[![MeshTUI focused direct-message view with a wire preview, learned route, repeater receipts, and end-to-end acknowledgement](docs/assets/meshtui-chat.png)](docs/assets/meshtui-chat.png)
 
 The dashboard shows an all-channel activity stream. Press `z` for focused chat;
 `/` opens the operator command palette. MeshTUI provides:
@@ -135,8 +164,10 @@ The dashboard shows an all-channel activity stream. Press `z` for focused chat;
 - unread counts and channel navigation;
 - Tab-completed `@[Name]` mentions, including emoji-led names;
 - a live UTF-8 byte budget for the active protocol;
-- a split wire preview with hops, path-hash width, and auto/flood/direct mode;
-- a queued → sent → heard-repeaters → ACK receipt timeline; and
+- a split wire preview with expected hops and path-hash width when a learned
+  route is known, plus auto/flood/direct mode;
+- a direct-message queued → sent → heard-repeaters → ACK receipt timeline,
+  while broadcasts stop at sent and, when available, heard-repeater evidence; and
 - MeshCore repeater attribution on sent channel messages.
 
 The composer refuses an over-limit payload without discarding the draft. The
@@ -173,29 +204,41 @@ The path and test bots are deterministic and local; they do not need an API key.
 
 ## Quick start
 
-The fastest way to explore MeshTUI does not require a radio:
+The fastest way to explore MeshTUI does not require a repository checkout or a
+radio. The public installer is readable at
+[meshtui.com/install.sh](https://meshtui.com/install.sh), does not use `sudo`,
+and prints the exact executable path when it finishes:
 
 ```sh
-git clone https://github.com/jsaveker/meshtui.git
-cd meshtui
-uv run meshtui --demo
+curl -fsSL https://meshtui.com/install.sh | bash
+~/.local/bin/meshtui --demo
 ```
 
-[uv](https://docs.astral.sh/uv/) installs the required Python version and locked
-dependencies automatically. To use real hardware, connect a companion radio over
-USB and run:
+If the installer prints a different path, use that path instead. To connect real
+hardware, attach a companion radio over USB and run:
 
 ```sh
-uv run meshtui
+~/.local/bin/meshtui
 ```
 
 MeshTUI auto-detects the serial device and protocol. If more than one device is
 present, or you want an explicit configuration:
 
 ```sh
-uv run meshtui --list-ports
-uv run meshtui --port /dev/ttyUSB0 --protocol meshcore
-uv run meshtui --port /dev/ttyACM0 --protocol meshtastic
+~/.local/bin/meshtui --list-ports
+~/.local/bin/meshtui --port /dev/ttyUSB0 --protocol meshcore
+~/.local/bin/meshtui --port /dev/ttyACM0 --protocol meshtastic
+```
+
+### Run from a source checkout
+
+[uv](https://docs.astral.sh/uv/) installs the required Python version and locked
+dependencies for development:
+
+```sh
+git clone https://github.com/jsaveker/meshtui.git
+cd meshtui
+uv run meshtui --demo
 ```
 
 ### Install without uv
