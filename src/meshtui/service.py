@@ -343,6 +343,10 @@ class MeshService:
         for byte in path:
             msg.repeated_by.add(self._repeater_label(byte))
         if len(msg.repeated_by) != before:
+            if self.store is not None and msg.message_id:
+                # Repeat evidence arrives after the row was written; without
+                # this, restored history shows every broadcast as unheard.
+                self.store.update_message_repeats(msg.message_id, msg.repeated_by)
             self._notify("chat", msg)
         return msg
 

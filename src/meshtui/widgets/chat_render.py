@@ -141,6 +141,12 @@ def _receipt_timeline(msg: ChatMessage) -> Text:
         line.append("  ->  failed", style="bold red")
     elif status == DeliveryStatus.EXPIRED.value:
         line.append("  ->  expired", style="red")
+    elif not msg.is_dm:
+        # A broadcast has no end-to-end ACK - ever. 'waiting' would promise a
+        # step that cannot come; hearing a repeat IS its confirmation, and a
+        # fresh send is honestly still listening for one.
+        if not repeaters and time.time() - msg.ts < 120:
+            line.append("  ->  listening for repeats", style="grey42")
     else:
         line.append("  ->  waiting", style="grey42")
     return line

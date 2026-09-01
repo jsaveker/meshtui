@@ -323,7 +323,8 @@ class Store:
         for name, sqltype in (("message_id", "TEXT"),
                               ("delivery_status", "TEXT DEFAULT ''"),
                               ("path_hash_size", "INTEGER"),
-                              ("route_mode", "TEXT DEFAULT ''")):
+                              ("route_mode", "TEXT DEFAULT ''"),
+                              ("repeated_by", "TEXT")):
             if name not in message_cols:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {sqltype}")
         conn.execute("CREATE INDEX IF NOT EXISTS messages_message_id ON messages(message_id)")
@@ -480,11 +481,20 @@ class Store:
     def add_message(self, m: ChatMessage) -> None:
         self._put(
             "INSERT INTO messages (ts, from_id, to_id, channel, text, outgoing, packet_id,"
-            " acked, message_id, delivery_status, path_hash_size, route_mode) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " acked, message_id, delivery_status, path_hash_size, route_mode, repeated_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (m.ts, m.from_id, m.to_id, m.channel, m.text, int(m.outgoing), m.packet_id,
-             int(m.acked), m.message_id, m.delivery_status, m.path_hash_size, m.route_mode),
+             int(m.acked), m.message_id, m.delivery_status, m.path_hash_size, m.route_mode,
+             json.dumps(sorted(m.repeated_by)) if m.repeated_by else None),
         )
+
+    def update_message_repeats(self, message_id: str, repeated_by: set[str]) -> None:
+        """Repeat evidence arrives after the send; keep the stored row current
+        so restored history still shows who carried the message."""
+        if not message_id:
+            return
+        self._put("UPDATE messages SET repeated_by=? WHERE message_id=?",
+                  (json.dumps(sorted(repeated_by)), message_id))
 
     def ack_message(self, packet_id: int) -> None:
         self._put("UPDATE messages SET acked=1, delivery_status='delivered' WHERE packet_id=?",
@@ -695,6 +705,7 @@ class Store:
                 acked=bool(r["acked"]), message_id=r["message_id"],
                 delivery_status=r["delivery_status"] or "",
                 path_hash_size=r["path_hash_size"], route_mode=r["route_mode"] or "",
+                repeated_by=set(_json_list(r["repeated_by"])),
             )
             for r in rows
         ]

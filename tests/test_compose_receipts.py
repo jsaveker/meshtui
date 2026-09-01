@@ -47,6 +47,34 @@ check("receipt timeline shows radio acceptance", "radio sent" in timeline, True)
 check("receipt timeline counts repeats", "heard 2 repeats" in timeline, True)
 check("receipt timeline ends in ACK", timeline.endswith("ACK"), True)
 
+# Broadcasts have no end-to-end ACK - 'waiting' promised a step that cannot
+# come. A repeated broadcast is complete; a fresh one is listening; an old
+# unheard one just stops at what actually happened.
+import time as _time
+broadcast = ChatMessage(ts=_time.time() - 600, from_id="!me", from_name="you",
+                        to_id="^all", text="wx", channel=13, outgoing=True,
+                        delivery_status=DeliveryStatus.SENT.value,
+                        repeated_by={"Santaluz Solar Repeater"})
+line = str(_receipt_timeline(broadcast))
+check("a repeated broadcast terminates at its repeats",
+      line.endswith("heard 1 repeat") and "waiting" not in line, True)
+fresh = ChatMessage(ts=_time.time(), from_id="!me", from_name="you", to_id="^all",
+                    text="wx", channel=13, outgoing=True,
+                    delivery_status=DeliveryStatus.SENT.value)
+check("a fresh unheard broadcast is listening, not waiting",
+      str(_receipt_timeline(fresh)).endswith("listening for repeats"), True)
+old = ChatMessage(ts=_time.time() - 600, from_id="!me", from_name="you", to_id="^all",
+                  text="wx", channel=13, outgoing=True,
+                  delivery_status=DeliveryStatus.SENT.value)
+old_line = str(_receipt_timeline(old))
+check("an old unheard broadcast ends at radio sent",
+      old_line.endswith("radio sent") and "waiting" not in old_line, True)
+dm_pending = ChatMessage(ts=_time.time(), from_id="!me", from_name="you",
+                         to_id="!c0decafe", text="hi", outgoing=True,
+                         delivery_status=DeliveryStatus.SENT.value)
+check("a DM still waits for its ACK",
+      str(_receipt_timeline(dm_pending)).endswith("waiting"), True)
+
 tmpdir = tempfile.mkdtemp(prefix="meshtui-compose-")
 path = os.path.join(tmpdir, "mesh.db")
 store = Store(path, flush_interval=0.01)
