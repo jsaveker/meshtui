@@ -763,6 +763,11 @@ class MeshTUI(App[None]):
         left.append(f" {dot} ", style=f"bold {colour}")
         left.append(who, style="bold bright_white")
         left.append("  ")
+        if isinstance(self.link, GatewayLink):
+            # Same radio either way; say which process owns it, so "is this
+            # the gateway or a direct serial open?" is answered at a glance.
+            left.append("via gateway", style="bold bright_magenta")
+            left.append(" -> ", style="grey42")
         left.append(where, style="grey62")
         if state.firmware:
             left.append(f"  {state.firmware}", style="grey42")
@@ -1171,6 +1176,10 @@ class MeshTUI(App[None]):
             f"traceroute to {self.state.node_name(node_id)} sent"
             f"{' (direct link only)' if hop_limit <= 1 else f' (up to {hop_limit} hops)'}"
             f" - the reply can take 30s or more", "grey62")
+        # The chat pane may be scrolled away or covered; say it on the
+        # status line too so the keypress visibly did something.
+        self.note(f"traceroute sent to {self.state.node_name(node_id)}"
+                  " - reply can take 30s+", "cyan")
         self.run_worker(
             lambda: link.request_traceroute(node_id, hop_limit),
             thread=True, name="traceroute",

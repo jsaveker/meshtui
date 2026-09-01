@@ -28,8 +28,11 @@ def check(name, got, want):
 class Spy:
     def __init__(self):
         self.sent = []
+        self.traces = []
     def send_text(self, text, dest="^all", channel=0):
         self.sent.append((text, dest, channel)); return (True, 1)
+    def request_traceroute(self, dest, hop_limit=5):
+        self.traces.append((dest, hop_limit))
     def stop(self): pass
 
 
@@ -171,6 +174,21 @@ async def main():
         check("overlay closed", isinstance(app.screen, ChatScreen), False)
         check("corner reflects the channel chosen in the overlay",
               app.query_one(ChatPane).active_target(), ("channel", 5))
+
+        print("\\nnode detail modal keys do what the footer promises")
+        from meshtui.widgets.detail import NodeDetail
+        target = st.upsert_node({"user": {"id": "!44440000",
+                                          "longName": "Far Repeater",
+                                          "role": "REPEATER"},
+                                 "lastHeard": time.time()})
+        app.push_screen(NodeDetail(target))
+        await pilot.pause(0.2)
+        await pilot.press("t")
+        await pilot.pause(0.4)
+        check("t closes the detail modal", isinstance(app.screen, NodeDetail), False)
+        check("t actually sends the traceroute", spy.traces, [("!44440000", 5)])
+        check("the status line says a trace is in flight",
+              "traceroute sent" in app._status_note[0], True)
 
     if failures:
         print(f"\\nFAIL: {len(failures)}: {', '.join(failures)}")

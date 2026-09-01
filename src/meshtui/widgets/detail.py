@@ -16,10 +16,14 @@ from .stats import fmt_duration
 
 
 class NodeDetail(ModalScreen[None]):
+    # The help footer advertises t and d - a modal swallows keys, so they
+    # must be bound HERE; the app-level bindings never see them.
     BINDINGS = [
         ("escape", "dismiss", "close"),
         ("q", "dismiss", "close"),
         ("enter", "dismiss", "close"),
+        ("t", "trace", "traceroute"),
+        ("d", "dm", "open dm"),
     ]
 
     def __init__(self, node: Node) -> None:
@@ -114,3 +118,13 @@ class NodeDetail(ModalScreen[None]):
 
     def action_dismiss(self) -> None:
         self.dismiss(None)
+
+    def action_trace(self) -> None:
+        node, app = self.node, self.app
+        self.dismiss(None)
+        app._trace(node.node_id, 5)  # type: ignore[attr-defined]
+
+    def action_dm(self) -> None:
+        app = self.app
+        self.dismiss(None)
+        app.action_dm_selected()  # type: ignore[attr-defined]
