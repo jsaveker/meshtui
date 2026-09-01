@@ -28,11 +28,41 @@ HELP = [
     ("add <idx> <name>", "create a channel; #name derives its key from the name"),
     ("add <idx> <name> <hex>", "create with an explicit 32-hex-char (16 byte) key"),
     ("add <idx> <name> random", "create private: a fresh random key, shown to share"),
-    ("key <idx>", "show a slot's key so another node can join"),
+    ("key <idx>", "show a slot's key + copy it to the clipboard"),
+    ("qr <idx>", "QR code the MeshCore app scans to join the channel"),
     ("del <idx>", "clear a slot"),
     ("name <idx> <name>", "rename, keeping the existing key"),
     ("refresh", "re-read every slot from the radio"),
 ]
+
+
+def share_url(name: str, hexkey: str) -> str:
+    """The MeshCore app's official channel deep link (docs.meshcore.io/qr_codes):
+    scanning it as a QR joins the channel - no typing on the phone."""
+    from urllib.parse import quote
+    return f"meshcore://channel/add?name={quote(name)}&secret={hexkey}"
+
+
+def qr_text(payload: str) -> Text | None:
+    """A scannable QR as half-block characters, white-on-black like qrencode's
+    ANSIUTF8 mode. None when the qrcode package is unavailable."""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()  # True = dark module; border rows included
+    blocks = {(True, True): " ", (True, False): "▄",
+              (False, True): "▀", (False, False): "█"}
+    out = Text()
+    for row in range(0, len(matrix), 2):
+        top = matrix[row]
+        bottom = matrix[row + 1] if row + 1 < len(matrix) else [False] * len(top)
+        line = "".join(blocks[(t, b)] for t, b in zip(top, bottom))
+        out.append(line + "\n", style="white on black")
+    return out
 
 
 def parse_secret(text: str) -> bytes | None:
@@ -143,6 +173,15 @@ class ChannelScreen(Screen[None]):
     def _say(self, text: str, style: str = "white") -> None:
         self.query_one("#chan-log", RichLog).write(Text(text, style=style))
 
+    def _copy(self, text: str, what: str) -> None:
+        """Put text on the system clipboard via OSC 52 (most terminals)."""
+        try:
+            self.app.copy_to_clipboard(text)
+            self._say(f"{what} copied to the clipboard", "grey54")
+        except Exception:  # noqa: BLE001 - clipboard is a convenience, never fatal
+            self._say(f"could not reach the clipboard; copy the {what} above by hand",
+                      "yellow")
+
     def _slot_key(self, index: int) -> str | None:
         """A slot's key as hex, from the link directly or over the gateway."""
         secret = (getattr(self.link, "channel_secrets", {}) or {}).get(index)
@@ -205,7 +244,30 @@ class ChannelScreen(Screen[None]):
                 return
             name = self._used_slots().get(index, f"slot {index}")
             self._say(f"{name} key: {hexkey}", "bright_green")
-            self._say("enter this name + key on the other node to join", "grey54")
+            self._copy(hexkey, "key")
+            self._say(f"or 'qr {index}' for a phone-scannable code", "grey54")
+            return
+
+        if verb == "qr" and len(parts) == 2 and parts[1].isdigit():
+            index = int(parts[1])
+            name = self._used_slots().get(index)
+            if not name:
+                self._say(f"slot {index} is empty", "yellow")
+                return
+            hexkey = self._slot_key(index)
+            if hexkey is None:
+                self._say(f"no key known for slot {index}", "yellow")
+                return
+            url = share_url(name, hexkey)
+            code = qr_text(url)
+            if code is None:
+                self._say("QR rendering needs the 'qrcode' package", "yellow")
+                return
+            log_widget = self.query_one("#chan-log", RichLog)
+            log_widget.write(Text(""))
+            log_widget.write(code)
+            self._say(f"scan with the MeshCore app to join {name}", "bright_green")
+            self._copy(url, "share link")
             return
 
         if verb in ("add", "name") and len(parts) >= 3 and parts[1].isdigit():
@@ -246,8 +308,9 @@ class ChannelScreen(Screen[None]):
             self._say(f"slot {index} -> {name}  ({how})", "bright_cyan")
             if fresh_key:
                 self._say(f"{name} key: {secret.hex()}", "bright_green")
-                self._say("enter this name + key on the other node to join "
-                          "(or run 'key {0}' later)".format(index), "grey54")
+                self._copy(secret.hex(), "key")
+                self._say(f"'qr {index}' shows a code the MeshCore app scans to join",
+                          "grey54")
             return
 
         self._say(f"don't understand {text!r} - see the commands above", "yellow")
