@@ -93,6 +93,22 @@ check("two repeaters on one byte stays honestly ambiguous",
       svc2._repeater_label("4c").endswith("?"), True)
 check("an unknown byte stays a hex label", svc2._repeater_label("ff"), "0xff")
 
+# --- every byte->name path shares ONE ranking (regression: the relays view
+# kept its own first-match copy and named a chat node three states away) ---
+from meshtui.pathcalc import plausible_relays
+from meshtui.widgets.relays import relay_label
+
+svc2.state.protocol = "meshcore"
+label, ambiguous = relay_label(svc2.state, 0x4c)
+check("relays view never names the implausible chat node",
+      "Distant Chat Node" in str(label), False)
+check("relays view picks the freshest repeater", "Other Repeater" in str(label), True)
+check("relays view still flags two repeaters as ambiguous", ambiguous, True)
+pool, amb = plausible_relays(list(svc2.state.nodes.values()))
+check("chat nodes drop out when any repeater matches",
+      all("Repeater" in n.long_name for n in pool), True)
+check("pool is sorted freshest-first", pool[0].long_name, "Other Repeater")
+
 print()
 if failures:
     print(f"FAIL: {len(failures)}: {', '.join(failures)}")

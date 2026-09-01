@@ -23,6 +23,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 
 from ..model import SPARK_WIDTH, Node
+from ..pathcalc import plausible_relays
 from ..state import MeshState
 from .nodes import snr_spark
 from .stats import fmt_duration
@@ -44,16 +45,16 @@ def bar(fraction: float, width: int = BAR_WIDTH) -> Text:
 
 def relay_label(state: MeshState, byte: int) -> tuple[Text, bool]:
     """Name a relay byte, flagging when several nodes could be responsible."""
-    candidates = state.resolve_relay(byte)
-    if not candidates:
+    pool, ambiguous = plausible_relays(state.resolve_relay(byte))
+    if not pool:
         return (Text(f"0x{byte:02x}  (unknown node)", style="grey42"), False)
-    best = candidates[0]
+    best = pool[0]
     text = Text()
     text.append(f"{best.label:<5}", style="bold bright_white")
     text.append(" ")
     text.append((best.long_name or best.node_id)[:22], style="grey70")
-    if len(candidates) > 1:
-        text.append(f"  ?x{len(candidates)}", style="dark_orange")
+    if ambiguous:
+        text.append(f"  ?x{len(pool)}", style="dark_orange")
         return (text, True)
     return (text, False)
 

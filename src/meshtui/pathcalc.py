@@ -31,6 +31,22 @@ def is_rebroadcaster(node: Any) -> bool:
     role = (getattr(node, "role", "") or "").upper()
     return any(tag in role for tag in ("REP", "ROUTER", "ROOM"))
 
+
+def plausible_relays(candidates: list) -> tuple[list, bool]:
+    """Narrow byte-share candidates to who could have rebroadcast, sorted
+    most-recently-heard first, plus whether the answer is still a guess.
+
+    THE shared ranking for every place a relay byte becomes a name (chat
+    repeat badges, the relays view, hop resolution). Three copies of this
+    logic have now each independently credited a rebroadcast to a chat node
+    three states away; there will not be a fourth copy.
+    """
+    plausible = [n for n in candidates if is_rebroadcaster(n)]
+    ambiguous = len(plausible) > 1 or (not plausible and len(candidates) > 1)
+    pool = sorted(plausible or list(candidates),
+                  key=lambda n: -(getattr(n, "last_heard", None) or 0.0))
+    return pool, ambiguous
+
 # The frame's 2-bit width field allows 1- to 4-byte per-hop path hashes (all
 # seen in the wild, sometimes on the same mesh); a hash is the first byte(s)
 # of the repeater's public key whatever the width.
@@ -198,16 +214,12 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
         wanted = byte.lower()
         candidates = [n for n in state.nodes.values()
                       if n.node_id[1:1 + len(wanted)].lower() == wanted]
-        # Many nodes share any single byte; only rebroadcasters can be hops,
-        # so a lone repeater match is CONFIDENT even when chat nodes share
-        # the byte. Prefer positioned (repeaters advertise locations as a
-        # rule) and recently heard among what remains.
-        plausible = [n for n in candidates if is_rebroadcaster(n)]
-        pool = plausible or candidates
+        # Many nodes share any single byte; plausible_relays keeps only who
+        # could actually rebroadcast. Prefer positioned among what remains
+        # (repeaters advertise locations as a rule).
+        pool, ambiguous = plausible_relays(candidates)
         pick = min(pool, key=lambda n: (not n.has_position,
                                         -(n.last_heard or 0.0))) if pool else None
-        ambiguous = (len(plausible) > 1
-                     or (not plausible and len(candidates) > 1))
         hops.append(Hop(byte=byte, node=pick, ambiguous=ambiguous))
     analysis = PathAnalysis(origin=origin, me=me, hops=hops)
 

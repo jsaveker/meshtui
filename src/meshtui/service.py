@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .meshcore_link import contact_to_node
-from .pathcalc import is_rebroadcaster, obs_from_packet
+from .pathcalc import obs_from_packet, plausible_relays
 from .model import (
     BROADCAST,
     ChannelRef,
@@ -390,22 +390,16 @@ class MeshService:
         a node id is '!' + the key's first four bytes - so match the prefix
         (2 hex chars on 1-byte-hash meshes, 4 on 2-byte ones).
 
-        Many nodes can share a short hash, so first-match attribution
-        regularly credited a rebroadcast to some contact three states away.
-        Rank the candidates by what physics allows - only repeaters and room
-        servers rebroadcast, and a recently-heard one beats a long-silent one
-        - and when more than one repeater shares the hash, say so with a '?'
-        rather than pretending certainty."""
+        Many nodes can share a short hash; plausible_relays ranks them by
+        what physics allows, and when the answer is still a guess say so
+        with a '?' rather than pretending certainty."""
         wanted = byte.lower()
         candidates = [n for n in self.state.nodes.values()
                       if n.node_id[1:1 + len(wanted)].lower() == wanted]
-        if not candidates:
+        pool, ambiguous = plausible_relays(candidates)
+        if not pool:
             return f"0x{byte}"
-        best = min(candidates, key=lambda n: (not is_rebroadcaster(n),
-                                              -(n.last_heard or 0.0)))
-        rebroadcasters = sum(1 for n in candidates if is_rebroadcaster(n))
-        certain = rebroadcasters == 1 and is_rebroadcaster(best)
-        return best.name if certain or len(candidates) == 1 else f"{best.name}?"
+        return pool[0].name if not ambiguous else f"{pool[0].name}?"
 
     def receive_node(self, raw: dict[str, Any]):
         try:

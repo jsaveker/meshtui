@@ -21,7 +21,7 @@ from textual.widgets import DataTable, Footer, Static
 
 from ..geo import km_offsets
 from ..pathcalc import (KM_TO_MI, PathAnalysis, PathObservation, analyze,
-                        geojson_url, route_geojson)
+                        geojson_url, plausible_relays, route_geojson)
 from ..state import MeshState
 from .canvas import BrailleCanvas
 from .mesh_map import snr_style
@@ -141,8 +141,15 @@ class PathScreen(Screen[None]):
         busiest = ""
         if byte_use:
             byte, count = byte_use.most_common(1)[0]
-            names = self.state.resolve_relay(int(byte, 16))
-            label = names[0].long_name if names else f"0x{byte}"
+            # Hop hashes are pubkey prefixes (1-4 bytes), not relay-node
+            # numbers - match node ids by prefix and rank by plausibility.
+            wanted = byte.lower()
+            pool, ambiguous = plausible_relays(
+                [n for n in self.state.nodes.values()
+                 if n.node_id[1:1 + len(wanted)].lower() == wanted])
+            label = f"0x{byte}"
+            if pool:
+                label = (pool[0].long_name or pool[0].label) + ("?" if ambiguous else "")
             busiest = f"   busiest hop: {label} ({count} paths)"
         median = f"   median stretch: x{stretches[len(stretches) // 2]:.1f}" if stretches else ""
         self.query_one("#paths-status", Static).update(Text(
