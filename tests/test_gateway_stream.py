@@ -208,6 +208,42 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     check("radio released", link.stopped, True)
     check("socket removed", socket_path.exists(), False)
 
+# --- plain `meshtui` attaches to a live gateway instead of fighting it
+# for the serial port (dual access has wedged the radio's USB stack) ---
+import argparse
+import socket as socket_mod
+from unittest import mock
+
+from meshtui import cli as cli_mod
+from meshtui import gateway as gateway_mod
+
+
+def _args(**overrides):
+    base = {"gateway": None, "port": None, "host": None, "demo": False}
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+probe_path = Path(tempfile.mkdtemp(prefix="meshtui-attach-")) / "gw.sock"
+with mock.patch.object(gateway_mod, "default_socket_path", lambda: probe_path):
+    check("no socket file -> open the radio directly",
+          cli_mod.should_auto_attach(_args()), False)
+    probe_path.touch()
+    check("a stale socket nobody answers -> open the radio directly",
+          cli_mod.should_auto_attach(_args()), False)
+    probe_path.unlink()
+    server = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    server.bind(str(probe_path))
+    server.listen(1)
+    check("a live gateway socket -> attach to it",
+          cli_mod.should_auto_attach(_args()), True)
+    check("an explicit --port still wins",
+          cli_mod.should_auto_attach(_args(port="/dev/ttyACM0")), False)
+    check("an explicit --gateway is left alone",
+          cli_mod.should_auto_attach(_args(gateway="")), False)
+    check("--demo still wins", cli_mod.should_auto_attach(_args(demo=True)), False)
+    server.close()
+
 print()
 if failures:
     print(f"{len(failures)} failure(s): {failures}")

@@ -212,6 +212,14 @@ def run_gateway(argv: list[str]) -> int:
     finally:
         # A late SIGTERM (or an impatient Ctrl-C) during cleanup must not
         # abort it - a half-stopped gateway leaves the radio and socket dirty.
+        # And cleanup itself must not outlive systemd's stop timeout: a hung
+        # gateway.stop() (a wedged serial close, a stuck disconnect) once ran
+        # past it and the SIGKILL that followed wedged the radio. Exit under
+        # our own power before systemd loses patience.
+        import threading
+        deadline = threading.Timer(8.0, lambda: os._exit(0))
+        deadline.daemon = True
+        deadline.start()
         try:
             gateway.stop()
             store.close()
@@ -489,6 +497,32 @@ def run_audit(db_path: str | None) -> int:
     return 0
 
 
+def should_auto_attach(args) -> bool:
+    """Plain `meshtui` attaches to a running gateway instead of the radio.
+
+    The gateway owns the serial port; a second opener doesn't just fail,
+    the dual access has wedged the radio's USB stack. Any explicit radio
+    choice (--port/--host/--demo) still wins.
+    """
+    if args.gateway is not None or args.port or args.host or args.demo:
+        return False
+    from .gateway import default_socket_path
+    path = default_socket_path()
+    if not path.exists():
+        return False
+    # A SIGKILLed gateway leaves its socket file behind; attach only to a
+    # gateway that actually answers, else fall through to a direct radio.
+    import socket as socket_mod
+    try:
+        probe = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        probe.settimeout(1.0)
+        probe.connect(str(path))
+        probe.close()
+        return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "gateway":
@@ -601,6 +635,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         # The meshtastic library is chatty on stderr, which corrupts the TUI.
         logging.basicConfig(level=logging.CRITICAL, handlers=[logging.NullHandler()])
+
+    if should_auto_attach(args):
+        print("attaching to running gateway (use --port to open a radio directly)",
+              file=sys.stderr)
+        args.gateway = ""
 
     store: Store | None = None
     if args.gateway is not None:
