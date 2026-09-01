@@ -27,6 +27,8 @@ from ..state import MeshState
 HELP = [
     ("add <idx> <name>", "create a channel; #name derives its key from the name"),
     ("add <idx> <name> <hex>", "create with an explicit 32-hex-char (16 byte) key"),
+    ("add <idx> <name> random", "create private: a fresh random key, shown to share"),
+    ("key <idx>", "show a slot's key so another node can join"),
     ("del <idx>", "clear a slot"),
     ("name <idx> <name>", "rename, keeping the existing key"),
     ("refresh", "re-read every slot from the radio"),
@@ -141,6 +143,14 @@ class ChannelScreen(Screen[None]):
     def _say(self, text: str, style: str = "white") -> None:
         self.query_one("#chan-log", RichLog).write(Text(text, style=style))
 
+    def _slot_key(self, index: int) -> str | None:
+        """A slot's key as hex, from the link directly or over the gateway."""
+        secret = (getattr(self.link, "channel_secrets", {}) or {}).get(index)
+        if secret is not None and any(secret):
+            return bytes(secret).hex()
+        getter = getattr(self.link, "channel_key", None)
+        return getter(index) if callable(getter) else None
+
     # -------------------------------------------------------------- actions
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -187,13 +197,30 @@ class ChannelScreen(Screen[None]):
             self._say(f"cleared slot {index}", "bright_cyan")
             return
 
+        if verb == "key" and len(parts) == 2 and parts[1].isdigit():
+            index = int(parts[1])
+            hexkey = self._slot_key(index)
+            if hexkey is None:
+                self._say(f"no key known for slot {index}", "yellow")
+                return
+            name = self._used_slots().get(index, f"slot {index}")
+            self._say(f"{name} key: {hexkey}", "bright_green")
+            self._say("enter this name + key on the other node to join", "grey54")
+            return
+
         if verb in ("add", "name") and len(parts) >= 3 and parts[1].isdigit():
             index = int(parts[1])
             if index >= self.state.max_channels:
                 self._say(f"this radio only has {self.state.max_channels} slots", "yellow")
                 return
-            secret = parse_secret(parts[-1])
-            name = " ".join(parts[2:-1]) if secret else " ".join(parts[2:])
+            fresh_key = verb == "add" and parts[-1].lower() == "random"
+            if fresh_key:
+                import secrets as secrets_mod
+                secret = secrets_mod.token_bytes(16)
+                parts = parts[:-1]
+            else:
+                secret = parse_secret(parts[-1])
+            name = " ".join(parts[2:-1]) if (secret and not fresh_key) else " ".join(parts[2:])
             if not name:
                 self._say("a channel needs a name", "yellow")
                 return
@@ -217,6 +244,10 @@ class ChannelScreen(Screen[None]):
                    else "key derived from the name" if name.startswith("#")
                    else "key derived from the name (MeshCore hashes it)")
             self._say(f"slot {index} -> {name}  ({how})", "bright_cyan")
+            if fresh_key:
+                self._say(f"{name} key: {secret.hex()}", "bright_green")
+                self._say("enter this name + key on the other node to join "
+                          "(or run 'key {0}' later)".format(index), "grey54")
             return
 
         self._say(f"don't understand {text!r} - see the commands above", "yellow")

@@ -48,6 +48,12 @@ def _gateway_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weatherbot-times", default="07:00,12:00,18:00",
                         metavar="HH:MM,...",
                         help="local posting times (default 07:00,12:00,18:00)")
+    parser.add_argument("--sensorbot", metavar="NAME_OR_SLOT",
+                        help="post a digest of heard sensor/battery telemetry "
+                             "to this channel, e.g. '#sensors'")
+    parser.add_argument("--sensorbot-minutes", type=float, default=60.0,
+                        metavar="N", help="minutes between sensor digests "
+                                          "(default 60)")
     parser.add_argument("--map-upload", action="store_true",
                         help="upload heard repeater/room-server adverts to "
                              "map.meshcore.io (needs firmware with private-key "
@@ -196,6 +202,8 @@ def run_gateway(argv: list[str]) -> int:
             map_upload=args.map_upload,
             weatherbot_channel=_channel_arg(args.weatherbot),
             weatherbot_times=args.weatherbot_times,
+            sensorbot_channel=_channel_arg(args.sensorbot),
+            sensorbot_minutes=args.sensorbot_minutes,
             ai_model=args.ai_model, ai_endpoint=args.ai_endpoint,
         )
     except (RuntimeError, ValueError) as exc:

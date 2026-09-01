@@ -205,6 +205,31 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
                               "text": "after the rude client"}, socket_path)
     check("gateway still answers after a client hangup", result["ok"], True)
 
+    print("channel slots are editable over the socket (gateway owns the radio)")
+    link.channel_secrets = {3: bytes(range(16))}
+    calls = []
+    link.set_channel = lambda i, n, s=None: calls.append(("set", i, n, s))
+    link.delete_channel = lambda i: calls.append(("del", i))
+    link.rename_channel = lambda i, n: (calls.append(("ren", i, n)) or True)
+    service.state.protocol = "meshcore"
+    result = request_gateway(
+        {"command": "channel", "action": "set", "index": 3, "name": "sensors",
+         "secret": "00112233445566778899aabbccddeeff"}, socket_path)
+    check("set over the socket ok", result["ok"], True)
+    check("set reached the radio link", calls[-1],
+          ("set", 3, "sensors", bytes.fromhex("00112233445566778899aabbccddeeff")))
+    check("GatewayLink proxies rename", tui_link.rename_channel(3, "farm"), True)
+    check("rename reached the radio link", calls[-1], ("ren", 3, "farm"))
+    check("GatewayLink reveals a slot key for sharing",
+          tui_link.channel_key(3), bytes(range(16)).hex())
+    result = request_gateway({"command": "channel", "action": "set", "index": 3,
+                              "name": "x", "secret": "abcd"}, socket_path)
+    check("a malformed secret is refused", result["ok"], False)
+    result = request_gateway({"command": "channel", "action": "key", "index": 9},
+                             socket_path)
+    check("an unknown slot's key is an error, not empty", result["ok"], False)
+    service.state.protocol = "meshtastic"
+
     tui_link.stop()
     before_chat = [p.text for k, p in events if k == "chat"]
     before_packets = [p.packet_id for k, p in events if k == "packet"]

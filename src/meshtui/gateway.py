@@ -136,6 +136,7 @@ class Gateway:
                  test_bot: TestBot | None = None,
                  map_uploader: Any | None = None,
                  weather_bot: Any | None = None,
+                 sensor_bot: Any | None = None,
                  telemetry_bot: TelemetryBot | None = None,
                  event_sinks: list[Any] | None = None,
                  reconnect_seconds: float = 5.0) -> None:
@@ -156,6 +157,7 @@ class Gateway:
         self.test_bot = test_bot
         self.map_uploader = map_uploader
         self.weather_bot = weather_bot
+        self.sensor_bot = sensor_bot
         self.telemetry_bot = telemetry_bot
         self.event_sinks = list(event_sinks or ())
         self._sinks_started = False
@@ -299,6 +301,8 @@ class Gateway:
                          name="gateway-watchdog", daemon=True).start()
         if self.weather_bot is not None:
             self.weather_bot.start(self._stop)
+        if self.sensor_bot is not None:
+            self.sensor_bot.start(self._stop)
 
     def serve_forever(self) -> None:
         if self._server is None:
@@ -488,6 +492,39 @@ class Gateway:
             try:
                 hop_limit = max(1, min(7, int(request.get("hop_limit") or 5)))
                 self.link.request_traceroute(target, hop_limit)
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True}
+        if command == "channel":
+            # Channel slots live on the radio, and the gateway owns the radio -
+            # a gateway-attached TUI edits them through here.
+            if self.service.state.protocol != "meshcore":
+                return {"ok": False, "error": "channel editing requires a MeshCore gateway"}
+            action = str(request.get("action") or "").casefold()
+            try:
+                index = int(request.get("index"))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "channel requires a slot index"}
+            name = str(request.get("name") or "")
+            try:
+                if action == "set":
+                    secret_hex = str(request.get("secret") or "")
+                    secret = bytes.fromhex(secret_hex) if secret_hex else None
+                    if secret is not None and len(secret) != 16:
+                        raise ValueError("secret must be 32 hex characters (16 bytes)")
+                    self.link.set_channel(index, name, secret)
+                elif action == "rename":
+                    if not self.link.rename_channel(index, name):
+                        return {"ok": False, "error": f"slot {index} was not renamed"}
+                elif action == "delete":
+                    self.link.delete_channel(index)
+                elif action == "key":
+                    secret = getattr(self.link, "channel_secrets", {}).get(index)
+                    if secret is None:
+                        return {"ok": False, "error": f"no key known for slot {index}"}
+                    return {"ok": True, "key": bytes(secret).hex()}
+                else:
+                    raise ValueError("channel action must be set, rename, delete, or key")
             except (TypeError, ValueError) as exc:
                 return {"ok": False, "error": str(exc)}
             return {"ok": True}
@@ -811,6 +848,34 @@ class GatewayLink(RadioLink):
         self._control({"command": "admin", "action": "neighbours", "to": node_id},
                       "neighbours request")
 
+    # --- channel slots: edited on the gateway's radio over the socket ---
+
+    def set_channel(self, index: int, name: str, secret: bytes | None = None) -> None:
+        self._control({"command": "channel", "action": "set", "index": index,
+                       "name": name, "secret": secret.hex() if secret else ""},
+                      f"channel {index}")
+
+    def rename_channel(self, index: int, name: str) -> bool:
+        return self._control({"command": "channel", "action": "rename",
+                              "index": index, "name": name}, f"rename channel {index}")
+
+    def delete_channel(self, index: int) -> None:
+        self._control({"command": "channel", "action": "delete", "index": index},
+                      f"clear channel {index}")
+
+    def channel_key(self, index: int) -> str | None:
+        """The slot's 16-byte key as hex, for sharing with another node."""
+        try:
+            result = request_gateway({"command": "channel", "action": "key",
+                                      "index": index}, self.socket_path)
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            self.emit("error", f"gateway channel key failed: {exc}")
+            return None
+        if not result.get("ok"):
+            self.emit("error", str(result.get("error") or "gateway refused channel key"))
+            return None
+        return str(result.get("key") or "") or None
+
     def _control(self, request: dict[str, Any], label: str) -> bool:
         try:
             result = request_gateway(request, self.socket_path)
@@ -863,6 +928,8 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   notify_active_seconds: float = 900.0,
                   map_upload: bool = False,
                   weatherbot_channel: str | int | None = None,
+                  sensorbot_channel: str | int | None = None,
+                  sensorbot_minutes: float = 60.0,
                   weatherbot_times: str = "07:00,12:00,18:00",
                   ai_model: str = "gpt-5-mini", ai_endpoint: str | None = None) -> Gateway:
     service = MeshService(store)
@@ -920,6 +987,11 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         from .weatherbot import WeatherBot
         weather_bot = WeatherBot(service, channel=weatherbot_channel,
                                  times=weatherbot_times, location=testbot_location)
+    sensor_bot = None
+    if sensorbot_channel is not None:
+        from .sensorbot import SensorBot
+        sensor_bot = SensorBot(service, channel=sensorbot_channel,
+                               minutes=sensorbot_minutes)
     return Gateway(
         service, link, socket_path,
         bot_router=router,
@@ -927,6 +999,7 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
         test_bot=test_bot,
         map_uploader=map_uploader,
         weather_bot=weather_bot,
+        sensor_bot=sensor_bot,
         telemetry_bot=telemetry_bot,
         event_sinks=event_sinks,
     )
