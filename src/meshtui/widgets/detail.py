@@ -113,7 +113,11 @@ class NodeDetail(ModalScreen[None]):
                               f" ({node.speed_mps * 3.6:.0f} km/h){heading}",
                     "bold bright_yellow")
             row("altitude", f"{node.alt} m" if node.alt is not None else None, "bright_blue")
-            row("map", f"https://www.google.com/maps?q={node.lat:.5f},{node.lon:.5f}", "blue")
+            # An OSC-8 hyperlink: a short clickable label instead of a raw
+            # URL the column width truncates into something un-copyable.
+            url = f"https://www.google.com/maps?q={node.lat:.5f},{node.lon:.5f}"
+            table.add_row("map", Text("open in google maps (click)",
+                                      style=f"bright_blue underline link {url}"))
         return table
 
     def action_dismiss(self) -> None:

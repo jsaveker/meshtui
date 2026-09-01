@@ -24,8 +24,14 @@ COMMANDS = [
     ("login <node>", "open remote admin at a node"),
     ("scope", "edit MeshCore flood scope"),
     ("rooms", "browse MeshCore room-server posts"),
-    ("layout <balanced|radio|chat|route>", "change the four-pane split"),
-    ("theme <phosphor|night-vision|high-contrast>", "change deck theme"),
+    # Concrete rows, not fill-in templates: enter (or a click) runs them.
+    ("layout balanced", "even four-pane split"),
+    ("layout radio", "radio-focused split"),
+    ("layout chat", "chat-focused split"),
+    ("layout route", "route-focused split"),
+    ("theme phosphor", "green phosphor deck theme"),
+    ("theme night-vision", "night-vision deck theme"),
+    ("theme high-contrast", "high-contrast deck theme"),
 ]
 
 COMMAND_WORDS = {c.split()[0] for c, _ in COMMANDS} | {"jump"}

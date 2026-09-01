@@ -120,6 +120,25 @@ async def main() -> int:
         check("palette jumps to a matching node", app.query_one("#nodes").selected_node_id(),
               "!4c000001")
 
+        # theme/layout are concrete runnable rows now; a bare 'theme' gives
+        # usage feedback instead of silently doing nothing.
+        await pilot.press("slash")
+        await pilot.pause(0.2)
+        field = app.screen.query_one("#palette-input")
+        field.value = "theme"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        check("bare 'theme' keeps the palette open with usage",
+              isinstance(app.screen, CommandPalette)
+              and "themes:" in app._status_note[0], True)
+        field = app.screen.query_one("#palette-input")
+        field.value = "theme night-vision"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        check("a full theme command applies", app.theme, "night-vision")
+        check("palette closes after the theme change",
+              isinstance(app.screen, CommandPalette), False)
+
         # A bare name is a search, not a command - live nodes appear as
         # runnable hits and enter jumps straight to the highlighted one.
         await pilot.press("slash")

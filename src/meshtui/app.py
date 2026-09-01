@@ -980,9 +980,15 @@ class MeshTUI(App[None]):
             return True
 
         if command == "layout":
-            return len(parts) >= 2 and self._set_layout(parts[1].casefold())
+            if len(parts) >= 2 and self._set_layout(parts[1].casefold()):
+                return True
+            self.note(f"layouts: {', '.join(LAYOUTS)}", "yellow")
+            return False
         if command == "theme":
-            return len(parts) >= 2 and self._set_theme(parts[1].casefold())
+            if len(parts) >= 2 and self._set_theme(parts[1].casefold()):
+                return True
+            self.note(f"themes: {', '.join(THEMES)}", "yellow")
+            return False
 
         self.note(f"unknown palette command: {command}", "yellow")
         return False

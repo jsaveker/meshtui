@@ -190,6 +190,22 @@ async def main():
         check("the status line says a trace is in flight",
               "traceroute sent" in app._status_note[0], True)
 
+        print("\\nthe detail map row is a clickable hyperlink")
+        import io
+        from rich.console import Console
+        positioned = st.upsert_node({"user": {"id": "!55550000",
+                                              "longName": "Hilltop Repeater",
+                                              "role": "REPEATER"},
+                                     "position": {"latitude": 30.49784,
+                                                  "longitude": -97.84599}})
+        console = Console(width=90, file=io.StringIO(), force_terminal=True)
+        console.print(NodeDetail(positioned)._body())
+        rendered = console.file.getvalue()
+        check("map row renders an OSC-8 hyperlink",
+              "\x1b]8;" in rendered and "google.com/maps" in rendered, True)
+        check("map row shows a label, not a truncated url",
+              "open in google maps" in rendered, True)
+
     if failures:
         print(f"\\nFAIL: {len(failures)}: {', '.join(failures)}")
         return 1
