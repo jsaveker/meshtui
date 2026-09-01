@@ -101,6 +101,9 @@ def fmt_hops(hops: int | None) -> Text:
     return Text(f"{hops}", style="cyan")
 
 
+COLUMN_KEYS = ("dot", "name", "snr", "trend", "hops", "batt", "pkts", "age")
+
+
 class NodeTable(DataTable):
     """Sortable table of every node in the mesh."""
 
@@ -112,6 +115,7 @@ class NodeTable(DataTable):
     def on_mount(self) -> None:
         # Widths are tuned to fit the 58-cell left column without clipping
         # the trailing Age column (DataTable adds 2 cells of padding each).
+        # Order must match COLUMN_KEYS / _cells().
         self.add_column("", key="dot", width=1)
         self.add_column("Node", key="name", width=16)
         self.add_column("SNR", key="snr", width=5)
@@ -133,37 +137,53 @@ class NodeTable(DataTable):
         return self._row_ids[self.cursor_row]
 
     def render_state(self, state: MeshState) -> None:
-        """Rebuild the table. Cheap enough at mesh scale (tens of nodes)."""
-        keep = self.cursor_row
-        self.clear()
-        self._row_ids = []
+        """Refresh in place; rebuild only when membership or order changes.
+
+        A clear()+re-add on every tick flashed the pane blank, and keeping
+        the cursor by row INDEX under a recency sort silently handed the
+        selection to whichever node moved into that row.
+        """
         now = time.time()
-        for node in state.sorted_nodes(self.sort_key):
-            age = None if node.last_heard is None else now - node.last_heard
-            if node.is_self:
-                dot = Text("*", style="bold bright_cyan")
-            elif age is not None and age < 900:
-                dot = Text("+", style="green")
-            elif age is not None and age < 3600:
-                dot = Text("~", style="yellow")
-            else:
-                dot = Text("·", style="grey35")
+        nodes = state.sorted_nodes(self.sort_key)
+        ids = [n.node_id for n in nodes]
+        if ids == self._row_ids:
+            for node in nodes:
+                for column, cell in zip(COLUMN_KEYS, self._cells(node, now)):
+                    self.update_cell(node.node_id, column, cell,
+                                     update_width=False)
+            return
 
-            name = Text(node.label.ljust(5)[:5], style="bold")
-            name.append(" ")
-            name.append(node.long_name[:10] or node.node_id, style="grey70")
-
-            self.add_row(
-                dot,
-                name,
-                fmt_snr(node.snr),
-                snr_spark(node.snr_history),
-                fmt_hops(node.hops),
-                fmt_battery(node),
-                Text(str(node.packets), style="grey70"),
-                fmt_age(age),
-            )
-            self._row_ids.append(node.node_id)
-
+        selected = self.selected_node_id()
+        self.clear()
+        self._row_ids = ids
+        for node in nodes:
+            self.add_row(*self._cells(node, now), key=node.node_id)
         if self._row_ids:
-            self.move_cursor(row=min(max(keep, 0), len(self._row_ids) - 1))
+            row = self._row_ids.index(selected) if selected in self._row_ids else 0
+            self.move_cursor(row=row)
+
+    def _cells(self, node: Node, now: float) -> tuple[Text, ...]:
+        age = None if node.last_heard is None else now - node.last_heard
+        if node.is_self:
+            dot = Text("*", style="bold bright_cyan")
+        elif age is not None and age < 900:
+            dot = Text("+", style="green")
+        elif age is not None and age < 3600:
+            dot = Text("~", style="yellow")
+        else:
+            dot = Text("·", style="grey35")
+
+        name = Text(node.label.ljust(5)[:5], style="bold")
+        name.append(" ")
+        name.append(node.long_name[:10] or node.node_id, style="grey70")
+
+        return (
+            dot,
+            name,
+            fmt_snr(node.snr),
+            snr_spark(node.snr_history),
+            fmt_hops(node.hops),
+            fmt_battery(node),
+            Text(str(node.packets), style="grey70"),
+            fmt_age(age),
+        )

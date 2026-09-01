@@ -138,6 +138,23 @@ async def main() -> int:
         check("palette closes after running the hit",
               isinstance(app.screen, CommandPalette), False)
 
+        # The refresh tick must not steal the selection: the cursor follows
+        # the NODE, not the row index, when the recency sort reorders rows.
+        nodes_table = app.query_one("#nodes")
+        st.upsert_node({"user": {"id": "!ff000001", "longName": "Newcomer",
+                                 "role": "CHAT"}, "lastHeard": time.time()})
+        nodes_table.render_state(app.state)
+        await pilot.pause(0.1)
+        check("selection survives a reorder", nodes_table.selected_node_id(),
+              "!aa000001")
+        row_before = nodes_table.cursor_row
+        nodes_table.render_state(app.state)
+        await pilot.pause(0.1)
+        check("a same-order refresh leaves the cursor alone",
+              nodes_table.cursor_row, row_before)
+        check("in-place refresh keeps every row",
+              nodes_table.row_count, len(app.state.nodes))
+
     if failures:
         print("\nFAIL:", failures)
         return 1
