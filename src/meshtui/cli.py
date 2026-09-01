@@ -93,6 +93,13 @@ def _gateway_parser() -> argparse.ArgumentParser:
                            "without raw radio payloads")
     mqtt.add_argument("--mqtt-active-seconds", type=float, default=900, metavar="SECONDS",
                       help="age after which a node is inactive (default: 900)")
+    mqtt.add_argument("--mqtt-send-channel", action="append", metavar="NAME",
+                      help="allow MQTT clients to transmit to this mesh channel via "
+                           "the <prefix>/<gateway>/send topic; repeatable. Off unless "
+                           "given - the broker does not get to key the radio by default")
+    mqtt.add_argument("--mqtt-send-seconds", type=float, default=2.0, metavar="SECONDS",
+                      help="minimum spacing between MQTT-initiated transmissions "
+                           "(default: 2)")
     notify = parser.add_argument_group("notifications")
     notify.add_argument("--notify-node", action="append", default=[], metavar="NAME_OR_ID",
                         help="notify when this node reappears (repeatable; wildcards allowed)")
@@ -155,6 +162,8 @@ def run_gateway(argv: list[str]) -> int:
                 include_position=args.mqtt_include_position,
                 publish_events=args.mqtt_events,
                 active_seconds=args.mqtt_active_seconds,
+                send_channels=tuple(args.mqtt_send_channel or ()),
+                send_min_seconds=args.mqtt_send_seconds,
             )
         except ValueError as exc:
             print(f"invalid MQTT configuration: {exc}", file=sys.stderr)

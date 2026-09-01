@@ -8,7 +8,7 @@ from pathlib import Path
 from meshtui.bot import TelemetryBot
 from meshtui.ha_mqtt import HomeAssistantMQTT, MQTTConfig
 from meshtui.model import (BROADCAST, ChatMessage, DeliveryStatus, Node, Packet,
-                           PeerRef, SendReceipt)
+                           PeerRef, SendReceipt, payload_bytes)
 from meshtui.notifications import Notification
 from meshtui.service import MeshService
 from meshtui.store import Store
@@ -37,6 +37,7 @@ class FakeMQTT:
         self.on_connect = None
         self.on_disconnect = None
         self.published = []
+        self.subscribed = []
         self.auth = None
         self.will = None
         self.address = None
@@ -60,6 +61,9 @@ class FakeMQTT:
 
     def loop_start(self):
         self.on_connect(self, None, {}, 0, None)
+
+    def subscribe(self, topic, qos=0):
+        self.subscribed.append((topic, qos))
 
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append((topic, payload, qos, retain))
@@ -303,6 +307,57 @@ ordinary_dm = ChatMessage(
 check("ordinary DM is left for the human", bot.route(ordinary_dm), [])
 bot.close()
 
+
+print("\ninbound MQTT sends: allowlist-gated bridge to the radio")
+
+
+class _Receipt:
+    class _Status:
+        value = "queued"
+    status = _Status()
+
+
+sent_mesh = []
+service.state.channels = [(0, "Public"), (14, "sensors")]
+service.send_message = lambda text, dest: (sent_mesh.append((text, dest)) or _Receipt())
+fake_send = FakeMQTT()
+send_config = MQTTConfig(host="mqtt.example.invalid", gateway_id="field station",
+                         refresh_seconds=999, send_channels=("#Sensors",),
+                         send_min_seconds=2.0)
+check("allowlist names are normalized", send_config.send_channels, ("sensors",))
+send_clock = [now]
+send_bridge = HomeAssistantMQTT(service, send_config, client=fake_send,
+                                clock=lambda: send_clock[0])
+send_bridge.start()
+check("send topic subscribed", fake_send.subscribed,
+      [("meshtui/field_station/send", 0)])
+check("json payload sends",
+      send_bridge.handle_send('{"channel": "sensors", "text": "door open"}'), True)
+check("message reached the service", sent_mesh[-1][0], "door open")
+check("resolved to the sensors slot", sent_mesh[-1][1].index, 14)
+send_clock[0] += 3
+check("bare text goes to the first allowlisted channel",
+      send_bridge.handle_send("washer done"), True)
+check("bare text sent", sent_mesh[-1][0], "washer done")
+send_clock[0] += 0.5
+check("faster than the interval is dropped", send_bridge.handle_send("spam"), False)
+send_clock[0] += 3
+check("non-allowlisted channel refused",
+      send_bridge.handle_send('{"channel": "Public", "text": "x"}'), False)
+check("empty text refused", send_bridge.handle_send("   "), False)
+send_clock[0] += 3
+check("oversize payload truncated, not refused",
+      send_bridge.handle_send("x" * 500), True)
+check("truncated to the protocol limit", payload_bytes(sent_mesh[-1][0]) <= 133, True)
+fake_quiet = FakeMQTT()
+quiet_bridge = HomeAssistantMQTT(
+    service, MQTTConfig(host="mqtt.example.invalid", refresh_seconds=999),
+    client=fake_quiet, clock=lambda: now)
+quiet_bridge.start()
+check("no allowlist -> nothing subscribed, radio cannot be keyed",
+      fake_quiet.subscribed, [])
+send_bridge.close()
+quiet_bridge.close()
 
 print()
 if failures:

@@ -63,6 +63,11 @@ class MQTTConfig:
     active_seconds: float = 15 * 60
     refresh_seconds: float = 60.0
     qos: int = 0
+    # Channels MQTT clients may transmit to. Empty = inbound sends disabled;
+    # this is a licensed radio, so nothing on the broker gets to key it up
+    # unless the operator explicitly allowlists a channel.
+    send_channels: tuple[str, ...] = ()
+    send_min_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         if not self.host.strip():
@@ -81,6 +86,12 @@ class MQTTConfig:
             raise ValueError("MQTT active window must be greater than zero")
         if not math.isfinite(self.refresh_seconds) or self.refresh_seconds <= 0:
             raise ValueError("MQTT refresh interval must be greater than zero")
+        normalized = tuple(dict.fromkeys(
+            str(name).lstrip("#").strip().casefold()
+            for name in self.send_channels if str(name).strip().lstrip("#")))
+        object.__setattr__(self, "send_channels", normalized)
+        if not math.isfinite(self.send_min_seconds) or self.send_min_seconds < 0:
+            raise ValueError("MQTT send interval must be zero or more seconds")
         object.__setattr__(self, "base_topic", _topic_root(self.base_topic, "MQTT base topic"))
         object.__setattr__(self, "discovery_prefix",
                            _topic_root(self.discovery_prefix, "discovery prefix"))
@@ -190,6 +201,9 @@ class HomeAssistantMQTT:
         self._discovery_payloads: dict[str, str] = {}
         self._published_nodes: set[str] = set()
         self._last_error = ""
+        self._sends_accepted = 0
+        self._sends_dropped = 0
+        self._last_send_ts = 0.0
 
     @property
     def availability_topic(self) -> str:
@@ -198,6 +212,10 @@ class HomeAssistantMQTT:
     @property
     def gateway_state_topic(self) -> str:
         return f"{self.config.base_topic}/{self.config.gateway_id}/state"
+
+    @property
+    def send_topic(self) -> str:
+        return f"{self.config.base_topic}/{self.config.gateway_id}/send"
 
     def status(self) -> dict[str, Any]:
         return {
@@ -210,6 +228,9 @@ class HomeAssistantMQTT:
             "nodes_published": len(self._published_nodes),
             "position_enabled": self.config.include_position,
             "events_enabled": self.config.publish_events,
+            "send_channels": list(self.config.send_channels),
+            "sends_accepted": self._sends_accepted,
+            "sends_dropped": self._sends_dropped,
             "error": self._last_error or None,
         }
 
@@ -276,6 +297,9 @@ class HomeAssistantMQTT:
         self._last_error = ""
         self._discovery_payloads.clear()  # republish after a broker restart
         self._publish(self.availability_topic, "online", retain=True)
+        if self.config.send_channels:
+            client.on_message = self._on_message
+            client.subscribe(self.send_topic, qos=self.config.qos)
         self._publish_gateway()
         with self.service.lock:
             nodes = list(self.service.state.nodes.values())
@@ -284,6 +308,73 @@ class HomeAssistantMQTT:
 
     def _on_disconnect(self, client, userdata, *args) -> None:
         self._connected = False
+
+    def _on_message(self, client, userdata, message) -> None:
+        """An inbound send request: {"channel": "...", "text": "..."} or bare
+        text (which goes to the first allowlisted channel).
+
+        Everything here transmits on a real radio, so it is deliberately
+        narrow: allowlisted channels only, one message per interval, payload
+        truncated to what the protocol carries.
+        """
+        try:
+            self.handle_send(bytes(message.payload).decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - a bad request must not kill paho's loop
+            self._sends_dropped += 1
+            log.warning("MQTT send request failed", exc_info=True)
+
+    def handle_send(self, raw: str) -> bool:
+        import json as _json
+        channel_name = self.config.send_channels[0] if self.config.send_channels else None
+        text = raw.strip()
+        if text.startswith("{"):
+            try:
+                data = _json.loads(text)
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                text = str(data.get("text") or data.get("message") or "").strip()
+                requested = str(data.get("channel") or "").lstrip("#").strip().casefold()
+                if requested:
+                    channel_name = requested
+        if not text or channel_name is None:
+            self._sends_dropped += 1
+            return False
+        if channel_name not in self.config.send_channels:
+            self._sends_dropped += 1
+            log.warning("MQTT send to %r refused: not an allowlisted channel", channel_name)
+            return False
+        now = self.clock()
+        if now - self._last_send_ts < self.config.send_min_seconds:
+            self._sends_dropped += 1
+            log.warning("MQTT send dropped: faster than one per %.0fs",
+                        self.config.send_min_seconds)
+            return False
+        from .model import ChannelRef, payload_bytes
+        from .radio import protocol_payload_limit
+        with self.service.lock:
+            state = self.service.state
+            destination = None
+            for position, item in enumerate(state.channels):
+                if isinstance(item, tuple):
+                    slot, name = int(item[0]), str(item[1])
+                else:
+                    slot, name = position, str(item)
+                if name.lstrip("#").casefold() == channel_name:
+                    destination = ChannelRef(state.protocol, slot, name)
+                    break
+            if destination is None:
+                self._sends_dropped += 1
+                log.warning("MQTT send refused: channel %r not on the radio", channel_name)
+                return False
+            limit = protocol_payload_limit(state.protocol)
+            while payload_bytes(text) > limit:
+                text = text[:-1]
+            self._last_send_ts = now
+            receipt = self.service.send_message(text, destination)
+        self._sends_accepted += 1
+        log.info("mqtt send: %s -> %s (%s)", text, destination.name, receipt.status.value)
+        return True
 
     def _refresh_loop(self) -> None:
         while not self._stop.wait(self.config.refresh_seconds):
