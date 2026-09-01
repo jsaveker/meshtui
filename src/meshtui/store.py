@@ -273,6 +273,16 @@ class Store:
             conn = sqlite3.connect(self.path, check_same_thread=False)
             conn.executescript(SCHEMA)
             self._migrate(conn)
+            # A garbage sender clock once persisted a future last_heard, and
+            # the MAX() upserts pin such a value forever - every restart then
+            # re-crowned that node the freshest and hop resolution picked it
+            # over the live repeater. A future stamp can't be real; sweep it.
+            horizon = time.time() + 300
+            for table in ("nodes", "node_obs"):
+                conn.execute(
+                    f"UPDATE {table} SET last_heard=NULL WHERE last_heard > ?",
+                    (horizon,))
+            conn.commit()  # the WAL pragma below refuses to run mid-transaction
             # WAL keeps readers (e.g. an external sqlite3 shell) from blocking us.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")

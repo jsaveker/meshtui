@@ -24,7 +24,7 @@ from .radio import (DemoLink, RadioLink, SerialLink, TCPLink,
                     find_serial_ports, protocol_payload_limit,
                     traceroute_hops)
 from .preferences import LAYOUTS, THEMES, OperatorPreferences
-from .state import ForeignChannel, RelayStat
+from .state import ForeignChannel, RelayStat, sane_heard
 from .service import MeshService
 from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.admin import AdminScreen
@@ -435,8 +435,9 @@ class MeshTUI(App[None]):
             node.snr = obs["snr"]
             node.hops = obs["hops"]
             node.packets = obs["packets"] or 0
-            if obs["last_heard"]:
-                node.last_heard = max(node.last_heard or 0.0, obs["last_heard"])
+            heard = sane_heard(obs["last_heard"])
+            if heard is not None:
+                node.last_heard = max(node.last_heard or 0.0, heard)
             for value in obs["snr_history"]:
                 try:
                     node.snr_history.append(float(value))

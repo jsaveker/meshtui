@@ -60,6 +60,37 @@ packet = Packet(ts=time.time(), from_id="!00000000", to_id="^all",
 service.receive_packet(packet)
 check("an unattributed packet creates no node", "!00000000" in service.state.nodes, False)
 
+# --- a future last_heard persisted BEFORE hygiene existed must not keep
+# resurrecting: the store sweeps it on open, and the restore path refuses
+# it (regression: DougsFBGr2's +15h clock outranked the live repeater on
+# every restart because MAX() upserts pinned the value forever) ---
+import os
+import tempfile
+
+from meshtui.state import sane_heard
+from meshtui.store import Store
+
+check("sane_heard passes an honest past stamp", sane_heard(1000.0, now=2000.0), 1000.0)
+check("sane_heard clamps small skew to now", sane_heard(2100.0, now=2000.0), 2000.0)
+check("sane_heard rejects a garbage clock", sane_heard(2000.0 + 54000, now=2000.0), None)
+check("sane_heard tolerates junk types", sane_heard("soon"), None)
+
+tmp = os.path.join(tempfile.mkdtemp(prefix="meshtui-hygiene-"), "mesh.db")
+store = Store(tmp, flush_interval=0.01)
+check("store opens", store.open(), True)
+store._conn.execute(
+    "INSERT INTO nodes (node_id, num, long_name, role, last_heard)"
+    " VALUES ('!bc64ce00', 1, 'Garbage Clock', 'REPEATER', ?)",
+    (time.time() + 15 * 3600,))
+store._conn.commit()
+store.close()
+store2 = Store(tmp, flush_interval=0.01)
+check("store reopens", store2.open(), True)
+row = store2._conn.execute(
+    "SELECT last_heard FROM nodes WHERE node_id='!bc64ce00'").fetchone()
+check("open() sweeps the future stamp from disk", row[0], None)
+store2.close()
+
 print()
 print("PASS" if not failures else f"FAIL: {failures}")
 sys.exit(1 if failures else 0)

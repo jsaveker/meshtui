@@ -172,6 +172,30 @@ class Stats:
         return time.time() - self.started
 
 
+CLOCK_SKEW_GRACE = 300.0
+
+
+def sane_heard(value: Any, now: float | None = None) -> float | None:
+    """A lastHeard from a clock we don't control, made safe to rank by.
+
+    Small future skew means "heard just now"; a wildly future value is a
+    garbage sender clock, and clamping it to now would crown a stale node
+    the freshest - it once made a repeater two counties over outrank the
+    one on the roof. Admit ignorance instead. EVERY path that sets
+    last_heard from stored or advertised data must come through here:
+    the database restore path once skipped it, and a poisoned timestamp
+    persisted before the check kept resurrecting on each restart.
+    """
+    if value is None:
+        return None
+    try:
+        heard = float(value)
+    except (TypeError, ValueError):
+        return None
+    now = time.time() if now is None else now
+    return min(heard, now) if heard <= now + CLOCK_SKEW_GRACE else None
+
+
 class MeshState:
     """Single source of truth for everything the UI renders."""
 
@@ -337,16 +361,9 @@ class MeshState:
             if raw.get(src) is not None:
                 setattr(node, dst, raw[src])
         if raw.get("lastHeard") is not None:
-            # MeshCore adverts stamp last_advert with clocks we don't control,
-            # and some are wrong by days (or decades). Small future skew means
-            # "heard just now"; a wildly future value is a garbage clock, and
-            # clamping it to now would crown a stale node the freshest - it
-            # once made a repeater two counties over outrank the one on the
-            # roof. Admit ignorance instead.
-            heard = float(raw["lastHeard"])
-            now = time.time()
-            if heard <= now + 300:
-                node.last_heard = min(heard, now)
+            heard = sane_heard(raw["lastHeard"])
+            if heard is not None:
+                node.last_heard = heard
         if raw.get("viaMqtt"):
             node.via_mqtt = True
 

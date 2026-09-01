@@ -26,7 +26,7 @@ from .model import (
     payload_bytes,
 )
 from .radio import RadioLink, protocol_payload_limit
-from .state import LocalChannel, MeshState
+from .state import LocalChannel, MeshState, sane_heard
 from .store import LAST_OBSERVER, Store, state_ts_key
 
 
@@ -223,8 +223,11 @@ class MeshService:
             node.snr = obs["snr"]
             node.hops = obs["hops"]
             node.packets = obs["packets"] or 0
-            if obs["last_heard"]:
-                node.last_heard = max(node.last_heard or 0.0, obs["last_heard"])
+            # sane_heard, or a future stamp persisted before hygiene existed
+            # resurrects on every restart and outranks the live repeater.
+            heard = sane_heard(obs["last_heard"])
+            if heard is not None:
+                node.last_heard = max(node.last_heard or 0.0, heard)
             node.snr_history.clear()
             for value in obs["snr_history"]:
                 try:
