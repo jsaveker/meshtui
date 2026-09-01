@@ -841,7 +841,7 @@ def build_gateway(*, store: Store, port: str | None = None, host: str | None = N
                   protocol: str = "auto", demo: bool = False,
                   socket_path: Path | str | None = None, bot_channel: str | int | None = None,
                   pathbot_channel: str | int | None = None,
-                  testbot_channel: str | int | None = None,
+                  testbot_channel: str | int | list[str | int] | None = None,
                   testbot_location: str = "",
                   telemetry_bot_nodes: list[str] | tuple[str, ...] = (),
                   telemetry_bot_trigger: str = "!mesh",

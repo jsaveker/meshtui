@@ -34,9 +34,10 @@ def _gateway_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pathbot", metavar="NAME_OR_SLOT",
                         help="answer !path on this channel with the route the "
                              "request traveled, e.g. '#bot' or 2")
-    parser.add_argument("--testbot", metavar="NAME_OR_SLOT",
+    parser.add_argument("--testbot", metavar="NAME_OR_SLOT", action="append",
                         help="acknowledge test messages on this channel with the "
-                             "hop count they arrived over, e.g. '#testing'")
+                             "hop count they arrived over, e.g. '#testing'; "
+                             "repeat the flag to serve several channels")
     parser.add_argument("--testbot-location", metavar="PLACE", default="",
                         help="place name appended to testbot receipts, e.g. "
                              "'Field Site' -> '3 hops to Base Station "
@@ -177,7 +178,8 @@ def run_gateway(argv: list[str]) -> int:
             demo=args.demo, socket_path=args.socket,
             bot_channel=_channel_arg(args.bot_channel),
             pathbot_channel=_channel_arg(args.pathbot),
-            testbot_channel=_channel_arg(args.testbot),
+            testbot_channel=([_channel_arg(c) for c in args.testbot]
+                             if args.testbot else None),
             testbot_location=args.testbot_location,
             telemetry_bot_nodes=args.telemetry_bot_allow,
             telemetry_bot_trigger=args.telemetry_bot_trigger,

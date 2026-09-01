@@ -373,6 +373,27 @@ tester.route(channel_msg('X: 😀 reacted to "Test" @[PocketOne]', channel=10))
 check("reactions get no reply", len(sent), before_len)
 tester.route(channel_msg("Someone: test", channel=2))
 check("tests on other channels are ignored", len(sent), before_len)
+
+# a bot given a LIST of channels serves them all, replying where asked
+service.state.channels = [(0, "Public"), (7, "#test"), (10, "#testing")]
+both = TestBot(service, channel=["#testing", "#test"])
+both.WAIT_STEPS = 1
+both.WAIT_STEP_SECONDS = 0.0
+both._map_link = lambda analysis: None
+heard("ChrisK", 4)
+both.route(channel_msg("ChrisK: Test", channel=7))
+check("a second configured channel is served",
+      sent[-1][0], "@[ChrisK] 4 hops to Base Station")
+check("the reply lands on the channel the request used", sent[-1][1].index, 7)
+service.state.note_path(PathObservation(ts=time.time(), kind="channel",
+                                        origin_name="Meshno", path="", hops=2,
+                                        snr=None, channel=10))
+both.route(channel_msg("Meshno: testing", channel=10))
+check("the first configured channel still works", sent[-1][1].index, 10)
+before_len = len(sent)
+both.route(channel_msg("Someone: test", channel=0))
+check("unlisted channels stay ignored with a channel list", len(sent), before_len)
+both.close()
 heard("Quiet", 3)
 tester.route(channel_msg("Quiet: test", ts=time.time() - 600, channel=10))
 check("stale test messages are ignored", len(sent), before_len)

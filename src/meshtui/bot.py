@@ -177,16 +177,23 @@ class BotRouter:
                              daemon=True, name="mesh-bot").start()
 
     def _channel_matches(self, index: int) -> bool:
-        if isinstance(self.channel, int):
-            return index == self.channel
-        wanted = self.channel.lstrip("#").casefold()
-        for position, item in enumerate(self.service.state.channels):
-            if isinstance(item, tuple):
-                slot, name = int(item[0]), str(item[1])
-            else:
-                slot, name = position, str(item)
-            if slot == index and name.lstrip("#").casefold() == wanted:
-                return True
+        # self.channel may be one channel or a list of them; replies always
+        # go back on the channel the request arrived on.
+        targets = (self.channel if isinstance(self.channel, (list, tuple, set))
+                   else (self.channel,))
+        for target in targets:
+            if isinstance(target, int):
+                if index == target:
+                    return True
+                continue
+            wanted = str(target).lstrip("#").casefold()
+            for position, item in enumerate(self.service.state.channels):
+                if isinstance(item, tuple):
+                    slot, name = int(item[0]), str(item[1])
+                else:
+                    slot, name = position, str(item)
+                if slot == index and name.lstrip("#").casefold() == wanted:
+                    return True
         return False
 
     def _eligible(self, message: ChatMessage) -> bool:
