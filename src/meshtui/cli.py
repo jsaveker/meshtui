@@ -55,7 +55,7 @@ def _gateway_parser() -> argparse.ArgumentParser:
                         metavar="N", help="minutes between sensor digests "
                                           "(default 60)")
     parser.add_argument("--map-upload", action="store_true",
-                        help="upload heard repeater/room-server adverts to "
+                        help="upload verified non-chat adverts to "
                              "map.meshcore.io (needs firmware with private-key "
                              "export)")
     parser.add_argument("--ai-model", default="gpt-5-mini")

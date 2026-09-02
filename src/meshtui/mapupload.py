@@ -1,9 +1,9 @@
-"""Map Auto Uploader - keep heard repeaters on map.meshcore.io.
+"""Map Auto Uploader - contribute heard non-chat adverts to map.meshcore.io.
 
 The official MeshCore map does not discover nodes; listeners feed it. When a
-repeater or room server advert is heard on RF, an opted-in listener verifies
-its Ed25519 signature (so only adverts the node really transmitted can be
-uploaded), signs the upload with its OWN node identity, and POSTs it. Nodes
+non-chat advert is heard on RF, an opted-in listener verifies its Ed25519
+signature (so only adverts the node really transmitted can be uploaded), signs
+the upload with its OWN node identity, and POSTs it. Nodes
 no uploader has refreshed for 30 days fall off the map - which is why a mesh
 corner with no uploader is a blind spot.
 
@@ -146,7 +146,7 @@ def verify_advert(payload: bytes) -> bool:
 # --------------------------------------------------------------- uploader
 
 class MapUploader:
-    """Service listener: verify heard infrastructure adverts and upload them.
+    """Service listener: verify heard non-chat adverts and upload them.
 
     Runs its network calls on a worker thread - service listeners fire under
     the service lock and must never block.

@@ -107,6 +107,8 @@ Press `c` to browse the channel slots on a MeshCore radio. The same screen can
 create, rename, delete, and share channels when the TUI opens the radio directly
 or attaches through `meshtui gateway`.
 
+[![MeshTUI MeshCore channel manager showing fictional private channel slots and a phone-scannable join QR](docs/assets/meshtui-channels.png)](docs/assets/meshtui-channels.png)
+
 ```text
 add 12 Night Shift random
 key 12
@@ -447,12 +449,12 @@ The SSH login must be able to access the remote socket. Leave the tunnel running
 while the TUI is attached; SSH supplies authentication and encryption without
 changing the gateway protocol.
 
-### Contribute MeshCore infrastructure adverts
+### Contribute MeshCore map adverts
 
-The optional map uploader publishes heard repeater and room-server adverts to
-the [official MeshCore map](https://map.meshcore.io/). It ignores chat-node
-adverts, verifies each infrastructure advert's Ed25519 signature, and signs the
-upload with the listening radio's identity before sending it over HTTPS.
+The optional map uploader publishes verified, heard, non-chat adverts to the
+[official MeshCore map](https://map.meshcore.io/). It ignores chat-node adverts,
+verifies each eligible advert's Ed25519 signature, and signs the upload with the
+listening radio's identity before sending it over HTTPS.
 
 ```sh
 meshtui gateway --protocol meshcore --port /dev/ttyUSB0 --map-upload
@@ -463,7 +465,7 @@ export. The private key remains in the gateway process and is not included in th
 upload; the request contains the signed advert, current radio parameters, the
 uploader's public key, and its signature. If the identity is unavailable or an
 advert fails verification, MeshTUI does not upload it. Enabling this option
-intentionally makes heard infrastructure advert data available to the public map.
+intentionally makes eligible heard advert data available to the public map.
 
 ### Read-only web companion
 
