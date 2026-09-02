@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 LAYOUTS = ("balanced", "radio", "chat", "route")
-THEMES = ("phosphor", "night-vision", "high-contrast")
+THEMES = ("phosphor", "night-vision", "blue-noir", "high-contrast")
 
 
 def default_preferences_path() -> Path:

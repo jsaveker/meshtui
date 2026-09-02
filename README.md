@@ -40,8 +40,8 @@ protocol's distinctive capabilities visible.
 | **Observe** | Work in four panes—nodes, chat, packet hex, and the selected route—with last-heard heat, SNR sparklines, and rolling one-hour airtime. |
 | **Communicate** | Preview wire bytes and route intent before sending. Direct messages can progress from queued → radio sent → repeats → ACK; broadcasts stop at sent and, when available, heard-repeater evidence. |
 | **Understand routes** | Select traffic to see its hop chain, map polyline, prefix candidates, and final-link SNR; run traceroute for outbound/return paths and per-hop SNR. |
-| **Operate remotely** | Authenticate to MeshCore repeaters, merge neighbour tables into the graph, browse room catch-up, and edit flood scope explicitly. |
-| **Automate** | Keep one gateway on the radio and fan it out to TUI/web clients, MQTT, local plugins, notifications, bots, and teaching replays. |
+| **Operate remotely** | Authenticate to MeshCore repeaters, merge neighbour tables into the graph, browse room catch-up, edit flood scope, and manage private radio channels. |
+| **Automate** | Keep one gateway on the radio and fan it out to TUI/web clients, MQTT, local plugins, notifications, scheduled weather and sensor posts, bots, map uploads, and teaching replays. |
 | **Investigate** | Inspect decoded fields and hex, retain SQLite history, export CSV, review channel exposure in the TUI, and audit captured Meshtastic keys offline. |
 
 ## Protocol support
@@ -55,12 +55,15 @@ can always choose explicitly with `--protocol meshcore` or
 | Dashboard, nodes, packets, chat, direct messages | ✓ | ✓ |
 | Position map, telemetry, sensors, history | ✓ | ✓ |
 | Channel browsing and payload-aware composer | ✓ | ✓ |
+| Create, rename, delete, and share private radio channels | ✓ | — |
 | Observed path explorer and route bot | ✓ | — |
 | Message repeat attribution | ✓ | — |
 | Remote repeater and room-server administration | ✓ | — |
 | Traceroute and per-hop SNR | ✓ | ✓ |
 | Room post catch-up and flood-scope control | ✓ | — |
 | Relay dependency and mesh health | ✓ | ✓ |
+| Scheduled weather and sensor posts | ✓ | ✓ |
+| Opt-in infrastructure advert map upload | ✓ | — |
 | In-app channel audit | ✓ | ✓ |
 | Offline captured-channel key audit | — | ✓ |
 
@@ -98,12 +101,39 @@ flooding. These are separate controls because blank means “use the radio
 default,” while `*` deliberately bypasses scope isolation. Flood-routed messages
 carry a visible `F` badge.
 
+## MeshCore channel management
+
+Press `c` to browse the channel slots on a MeshCore radio. The same screen can
+create, rename, delete, and share channels when the TUI opens the radio directly
+or attaches through `meshtui gateway`.
+
+```text
+add 12 Night Shift random
+key 12
+qr 12
+name 12 Night Watch
+del 12
+refresh
+```
+
+Use `random` to generate a fresh 16-byte key for a private channel. `key` shows
+the key and asks the terminal to copy it through an OSC 52 clipboard sequence;
+if clipboard access is unavailable, MeshTUI leaves the value visible for manual
+copying. `qr` displays a phone-scannable MeshCore join code and copies its
+`meshcore://` share link. A rename preserves the existing key. The command
+`add SLOT NAME KEY` also accepts an existing key as 32 hexadecimal characters.
+
+A channel name beginning with `#` derives its key from the name, so anyone who
+knows that name can join. Use a random or explicit 32-hex-character key when the
+channel must be private. Treat a displayed key, join link, or QR code as a
+credential: do not put it in public screenshots, logs, or issue reports.
+
 ## Operator cockpit
 
 The main screen is always a four-pane workspace: nodes, chat, packet/hex, and the
 selected route. `l` cycles balanced, radio, chat, and route-biased layouts; `T`
-cycles phosphor, night-vision, and high-contrast themes. Both choices are stored per
-protocol in `~/.config/meshtui/preferences.json`, so a MeshCore deck and a
+cycles phosphor, night-vision, blue-noir, and high-contrast themes. Both choices
+are stored per protocol in `~/.config/meshtui/preferences.json`, so a MeshCore deck and a
 Meshtastic station can keep different working arrangements.
 
 Press `/` for the searchable command palette. It exposes the operator vocabulary
@@ -125,6 +155,7 @@ login RidgeRepeater
 rooms
 scope
 layout route
+theme blue-noir
 theme high-contrast
 ```
 
@@ -179,10 +210,15 @@ value.
 
 [![MeshTUI bots channel showing synthetic path, coffee, and audit bot replies](docs/assets/meshtui-bots.png)](docs/assets/meshtui-bots.png)
 
-The unattended gateway can host three opt-in responders:
+The unattended gateway can host opt-in responders and scheduled publishers:
 
 - `--pathbot CHANNEL` answers `!path` from MeshCore's recorded RF route data.
 - `--testbot CHANNEL` returns the observed hop count for a field-test message.
+  Repeat the option to serve multiple test channels.
+- `--weatherbot CHANNEL` posts current weather and the day's forecast at the
+  local times set by `--weatherbot-times`.
+- `--sensorbot CHANNEL` posts a digest of recently heard environmental and
+  infrastructure power telemetry at the interval set by `--sensorbot-minutes`.
 - `--bot-channel CHANNEL` sends explicit `@ai` requests to a
   Responses-compatible text provider.
 
@@ -196,11 +232,26 @@ export OPENAI_API_KEY='...'
 
 meshtui gateway --protocol meshcore --port /dev/ttyUSB0 \
   --pathbot '#bots' \
-  --testbot '#testing' --testbot-location 'the suspicious rooftop' \
+  --testbot '#testing' --testbot '#night-shift' \
+  --testbot-location 'the suspicious rooftop' \
+  --weatherbot '#weather' --weatherbot-times '07:00,18:00' \
+  --sensorbot 'Private Sensors' --sensorbot-minutes 60 \
   --bot-channel '#bots' --ai-model gpt-5-mini
 ```
 
-The path and test bots are deterministic and local; they do not need an API key.
+WeatherBot needs the gateway's advertised position and outbound Internet access.
+At each configured time it sends that latitude and longitude, rounded to four
+decimal places, to Open-Meteo and posts at most one mesh message. Missed schedule
+windows are skipped instead of replayed later. `--testbot-location` labels both
+test receipts and weather reports. SensorBot makes no Internet request and
+requests no additional RF telemetry; it summarizes data the gateway has already
+heard and posts at most one message per interval, with a five-minute minimum.
+Node labels and sensor readings can still be sensitive, so prefer a private
+channel for sensor digests.
+
+The path, test, and sensor bots are deterministic and local; they do not need an
+API key. Every bot reply or scheduled post consumes real LoRa airtime. Choose
+quiet channels and conservative schedules, especially on a busy mesh.
 
 ## Quick start
 
@@ -221,8 +272,11 @@ hardware, attach a companion radio over USB and run:
 ~/.local/bin/meshtui
 ```
 
-MeshTUI auto-detects the serial device and protocol. If more than one device is
-present, or you want an explicit configuration:
+If a live gateway answers on the default owner socket, plain `meshtui` attaches
+to it automatically instead of competing for the radio. Otherwise, MeshTUI
+auto-detects the serial device and protocol. An explicit `--port`, `--host`, or
+`--demo` choice always takes precedence. If more than one device is present, or
+you want an explicit configuration:
 
 ```sh
 ~/.local/bin/meshtui --list-ports
@@ -316,6 +370,10 @@ meshtui send dm --to '!c0decafe' 'water sensor is dry again'
 meshtui send dm --to '!c0decafe' --wait 300 'field test 0042'
 ```
 
+With the default socket, running plain `meshtui` also detects the live gateway
+and attaches automatically. Pass `--port` or `--host` when you deliberately want
+to open a radio directly.
+
 One logical outgoing message is written before transmission. Failed connections
 leave it queued, retries retain the same message ID, and process restarts do not
 erase the outbox.
@@ -323,8 +381,15 @@ erase the outbox.
 The owner-only Unix socket supports multiple simultaneous subscribers. Every TUI,
 the browser companion, and local automation sees a consistent snapshot followed
 by live events, while only the gateway opens the serial/BLE/TCP radio and writes
-SQLite. Trace, room/admin, neighbour, and flood-scope operations are proxied
-through that same owner rather than reopening the device.
+SQLite. Trace, room/admin, neighbour, flood-scope, and channel-management
+operations are proxied through that same owner rather than reopening the device.
+
+Treat this socket as a privileged local control interface. A client that can open
+it can transmit messages, invoke repeater and room operations, change flood
+scope, modify radio channels, and retrieve channel keys. The gateway creates the
+socket with owner-only permissions, but those permissions cannot protect it after
+an unsafe bind mount, file share, or proxy. Do not expose it through an
+unauthenticated TCP bridge or grant access to untrusted containers or users.
 
 Delivery states have deliberately narrow meanings:
 
@@ -363,8 +428,7 @@ docker compose -f deploy/compose.gateway.example.yaml exec gateway \
 ```
 
 Keep private MQTT settings, channel names, and credentials in a local Compose
-override or environment file outside the repository. Do not make the gateway
-socket available through an unauthenticated TCP proxy: it permits mesh sends.
+override or environment file outside the repository.
 
 To run the TUI on another computer, forward the Unix socket through SSH. The same
 command works over a local address or a private overlay-network address:
@@ -382,6 +446,24 @@ meshtui --gateway /tmp/meshtui-remote.sock
 The SSH login must be able to access the remote socket. Leave the tunnel running
 while the TUI is attached; SSH supplies authentication and encryption without
 changing the gateway protocol.
+
+### Contribute MeshCore infrastructure adverts
+
+The optional map uploader publishes heard repeater and room-server adverts to
+the [official MeshCore map](https://map.meshcore.io/). It ignores chat-node
+adverts, verifies each infrastructure advert's Ed25519 signature, and signs the
+upload with the listening radio's identity before sending it over HTTPS.
+
+```sh
+meshtui gateway --protocol meshcore --port /dev/ttyUSB0 --map-upload
+```
+
+The option is disabled by default and requires firmware that permits private-key
+export. The private key remains in the gateway process and is not included in the
+upload; the request contains the signed advert, current radio parameters, the
+uploader's public key, and its signature. If the identity is unavailable or an
+advert fails verification, MeshTUI does not upload it. Enabling this option
+intentionally makes heard infrastructure advert data available to the public map.
 
 ### Read-only web companion
 
@@ -630,12 +712,12 @@ Press `?` inside MeshTUI for the complete, context-aware reference.
 | `r` | Open Meshtastic relay dependency and mesh health. |
 | `a` | Open the Meshtastic channel security audit. |
 | `w` | Open sensor telemetry. |
-| `c` | Browse channels. |
+| `c` | Browse and manage MeshCore channels. |
 | `p` | Pause or resume the packet feed. |
 | `f` | Cycle the packet filter. |
 | `s` | Cycle node sorting. |
 | `l` | Cycle the protocol-specific pane layout. |
-| `T` | Cycle the phosphor, night-vision, and high-contrast themes. |
+| `T` | Cycle the phosphor, night-vision, blue-noir, and high-contrast themes. |
 | `G` / `End` | Follow the newest packet. |
 | `Esc` | Leave the composer or close an overlay. |
 | `q` | Quit. |
@@ -726,11 +808,14 @@ The project uses a small protocol-neutral core:
 - `src/meshtui/gateway.py` owns the radio and local socket API.
 - `src/meshtui/web.py` serves the read-only browser companion from that socket.
 - `src/meshtui/ha_mqtt.py` publishes opt-in Home Assistant discovery, state, and events.
+- `src/meshtui/mapupload.py` verifies and signs opt-in MeshCore map contributions.
 - `src/meshtui/plugins.py` runs the explicitly enabled local Python plugin API.
 - `src/meshtui/replay.py` builds a send-disabled ghost mesh from SQLite or captures.
 - `src/meshtui/notifications.py` fans named-node and failed-trace alerts to configured sinks.
 - `src/meshtui/preferences.py` and `src/meshtui/watch.py` persist operator-only views.
-- `src/meshtui/bot.py` implements bounded AI, path, and test routing.
+- `src/meshtui/bot.py`, `src/meshtui/weatherbot.py`, and
+  `src/meshtui/sensorbot.py` implement bounded responders and scheduled channel
+  posts.
 - `src/meshtui/store.py` owns SQLite persistence.
 - `src/meshtui/app.py` and `src/meshtui/widgets/` render the Textual UI.
 
@@ -746,10 +831,11 @@ uv run python tests/smoke.py
 
 `tests/smoke.py` drives the real Textual app headlessly. The focused tests cover
 protocol mapping, route hashes, room catch-up, flood scope, remote-admin isolation
-and redaction, channel indices, packet rendering, reconnect behavior, durable
-delivery and receipt timelines, health metrics, saved watch filters, MQTT
-discovery/events, plugins, notifications, SQLite/PCAP replay, map links, web
-snapshots, and gateway streaming without requiring radio hardware.
+and redaction, private-channel creation and sharing, packet rendering, reconnect
+behavior, durable delivery and receipt timelines, health metrics, saved watch
+filters, MQTT discovery/events, plugins, notifications, scheduled bots, signed
+map uploads, SQLite/PCAP replay, map links, web snapshots, and gateway streaming
+without requiring radio hardware.
 
 For an actual RF acceptance test, use two radios and verify both the received
 message and a direct-message acknowledgement. A simulated pass proves the

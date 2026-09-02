@@ -66,6 +66,12 @@ OPERATOR_THEMES = (
         panel="#0c1b09", boost="#153510", dark=True,
     ),
     Theme(
+        name="blue-noir", primary="#70a7ff", secondary="#53d6f4",
+        accent="#ad82ff", warning="#ffd166", error="#ff6f91", success="#53d6f4",
+        foreground="#edf4ff", background="#050814", surface="#090f1e",
+        panel="#0d1628", boost="#14213a", dark=True,
+    ),
+    Theme(
         name="high-contrast", primary="#ffffff", secondary="#00e5ff",
         accent="#ffff00", warning="#ffff00", error="#ff3b30", success="#4cff4c",
         foreground="#ffffff", background="#000000", surface="#000000",

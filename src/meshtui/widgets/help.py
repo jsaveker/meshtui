@@ -16,7 +16,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("/", "open command palette: jump / filter / send / trace / login"),
         ("z", "expand chat to full screen"),
         ("l", "cycle the protocol-specific four-pane layout"),
-        ("T", "cycle phosphor / night-vision / high-contrast"),
+        ("T", "cycle phosphor / night-vision / blue-noir / high-contrast"),
         ("escape", "leave the message box / close an overlay"),
         ("?", "this help"),
         ("q", "quit"),

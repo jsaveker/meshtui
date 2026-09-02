@@ -132,10 +132,10 @@ async def main() -> int:
               isinstance(app.screen, CommandPalette)
               and "themes:" in app._status_note[0], True)
         field = app.screen.query_one("#palette-input")
-        field.value = "theme night-vision"
+        field.value = "theme blue-noir"
         await pilot.press("enter")
         await pilot.pause(0.2)
-        check("a full theme command applies", app.theme, "night-vision")
+        check("a full theme command applies", app.theme, "blue-noir")
         check("palette closes after the theme change",
               isinstance(app.screen, CommandPalette), False)
 

@@ -31,6 +31,7 @@ COMMANDS = [
     ("layout route", "route-focused split"),
     ("theme phosphor", "green phosphor deck theme"),
     ("theme night-vision", "night-vision deck theme"),
+    ("theme blue-noir", "blue and violet deck theme"),
     ("theme high-contrast", "high-contrast deck theme"),
 ]
 
