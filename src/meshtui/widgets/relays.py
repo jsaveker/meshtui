@@ -1,9 +1,9 @@
 """Relay dependency and mesh health.
 
-Every packet carries `relay_node` - the low byte of the node number that last
-forwarded it. That single byte is the only routing evidence on the wire, and
-aggregated over a capture it reveals which nodes your view of the mesh actually
-depends on. On a real mesh the answer is usually "two of them".
+Meshtastic reports the low byte of the node number that last forwarded a
+packet; MeshCore reports a 1- to 4-byte public-key prefix.  Aggregated over a
+capture, that evidence reveals which nodes your view of the mesh depends on.
+Short hashes can collide and must remain unnamed when they do.
 
 The lower half reports `localStats`, which nodes broadcast about themselves:
 packet counters, duplicate and relay-cancel rates, free heap and noise floor.
@@ -12,6 +12,8 @@ packet counters, duplicate and relay-cancel rates, free heap and noise floor.
 from __future__ import annotations
 
 import time
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 
 from rich.console import Group
 from rich.table import Table
@@ -22,9 +24,9 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
-from ..model import SPARK_WIDTH, Node
+from ..model import SPARK_WIDTH, Node, normalize_relay_hash
 from ..pathcalc import plausible_relays
-from ..state import MeshState
+from ..state import MeshState, RelayStat
 from .nodes import snr_spark
 from .stats import fmt_duration
 
@@ -43,20 +45,66 @@ def bar(fraction: float, width: int = BAR_WIDTH) -> Text:
     return out
 
 
-def relay_label(state: MeshState, byte: int) -> tuple[Text, bool]:
-    """Name a relay byte, flagging when several nodes could be responsible."""
-    pool, ambiguous = plausible_relays(state.resolve_relay(byte))
+def _relay_resolution(state: MeshState, relay_hash: str | int) -> tuple[list[Node], bool]:
+    return plausible_relays(state.resolve_relay(relay_hash))
+
+
+def relay_label(state: MeshState, relay_hash: str | int) -> tuple[Text, bool]:
+    """Name an exact relay token, but never guess across a collision."""
+    token = normalize_relay_hash(relay_hash)
+    if token is None:
+        return (Text("invalid relay hash", style="red"), False)
+    pool, ambiguous = _relay_resolution(state, token)
     if not pool:
-        return (Text(f"0x{byte:02x}  (unknown node)", style="grey42"), False)
+        return (Text(f"0x{token}  (unknown node)", style="grey42"), False)
+    if ambiguous:
+        noun = "repeater" if len(pool) == 1 else "repeaters"
+        return (Text(f"0x{token}  ({len(pool)} possible {noun})",
+                     style="dark_orange"), True)
     best = pool[0]
     text = Text()
     text.append(f"{best.label:<5}", style="bold bright_white")
     text.append(" ")
     text.append((best.long_name or best.node_id)[:22], style="grey70")
-    if ambiguous:
-        text.append(f"  ?x{len(pool)}", style="dark_orange")
-        return (text, True)
     return (text, False)
+
+
+def _relay_group(state: MeshState, relay_hash: str) -> tuple[str, str]:
+    """Group exact-width tokens that resolve confidently to the same node."""
+    pool, ambiguous = _relay_resolution(state, relay_hash)
+    if pool and not ambiguous:
+        return ("node", pool[0].node_id)
+    return ("hash", relay_hash)
+
+
+def _merge_relay_stats(rows: Iterable[RelayStat]) -> RelayStat:
+    members = list(rows)
+    token = max((row.key for row in members), key=lambda value: (len(value), value))
+    newest = max(members, key=lambda row: row.last_seen)
+    merged = RelayStat(
+        byte=int(token[:2], 16), relay_hash=token,
+        packets=sum(row.packets for row in members),
+        origins=set().union(*(row.origins for row in members)),
+        first_seen=min(row.first_seen for row in members),
+        last_seen=newest.last_seen,
+        snr_sum=sum(row.snr_sum for row in members),
+        snr_n=sum(row.snr_n for row in members),
+        last_snr=newest.last_snr,
+    )
+    for row in sorted(members, key=lambda item: item.last_seen):
+        merged.snr_history.extend(row.snr_history)
+    return merged
+
+
+def display_relay_share(state: MeshState) -> list[tuple[RelayStat, float]]:
+    """Coalesce exact aliases for display while retaining raw stored buckets."""
+    groups: dict[tuple[str, str], list[RelayStat]] = defaultdict(list)
+    for relay in state.relays.values():
+        groups[_relay_group(state, relay.key)].append(relay)
+    merged = [_merge_relay_stats(rows) for rows in groups.values()]
+    total = sum(relay.packets for relay in merged) or 1
+    return sorted(((relay, relay.packets / total) for relay in merged),
+                  key=lambda item: -item[1])
 
 
 class RelayView(Static):
@@ -102,14 +150,14 @@ class RelayView(Static):
                         ("relay", "share", "", "packets", "origins", "avg snr",
                          "last", "trend")])
 
-        share = self.state.relay_share()
+        share = display_relay_share(self.state)
         if not share:
             table.add_row(Text("no relayed packets seen yet", style="grey42"),
                           *[Text("") for _ in range(7)])
             return table
 
         for relay, fraction in share:
-            label, _ = relay_label(self.state, relay.byte)
+            label, _ = relay_label(self.state, relay.key)
             snr = relay.avg_snr
             table.add_row(
                 label,
@@ -125,29 +173,83 @@ class RelayView(Static):
         return table
 
     def _verdict(self) -> Text:
-        share = self.state.relay_share()
+        share = display_relay_share(self.state)
         out = Text()
         if not share:
             return out
-        top2 = sum(f for _, f in share[:2])
-        if len(share) >= 2 and top2 >= 0.8:
+
+        resolved: list[tuple[RelayStat, float, Node]] = []
+        unresolved: list[tuple[RelayStat, float]] = []
+        for relay, fraction in share:
+            identity = _relay_group(self.state, relay.key)
+            node = self.state.nodes.get(identity[1]) if identity[0] == "node" else None
+            if node is None:
+                unresolved.append((relay, fraction))
+            else:
+                resolved.append((relay, fraction, node))
+
+        unresolved_share = sum(fraction for _, fraction in unresolved)
+        if unresolved:
+            out.append("! ", style="bold dark_orange")
+            if not resolved:
+                out.append(
+                    f"{unresolved_share * 100:.1f}% of observed relay traffic is "
+                    "unresolved; relay dependency cannot yet be determined.\n",
+                    style="bold dark_orange",
+                )
+            elif len(resolved) == 1:
+                _, fraction, node = resolved[0]
+                out.append(f"{fraction * 100:.1f}% is confidently attributed to ",
+                           style="bold dark_orange")
+                out.append(node.name, style="bold bright_white")
+                out.append(f"; {unresolved_share * 100:.1f}% remains unresolved.\n",
+                           style="bold dark_orange")
+                out.append(f"  {node.name} carries at least {fraction * 100:.0f}% "
+                           "of what you hear.\n", style="grey70")
+            else:
+                resolved_share = sum(fraction for _, fraction, _ in resolved)
+                out.append(
+                    f"{resolved_share * 100:.1f}% is confidently attributed across "
+                    f"{len(resolved)} relays; {unresolved_share * 100:.1f}% remains "
+                    "unresolved.\n",
+                    style="bold dark_orange",
+                )
+                _, fraction, node = resolved[0]
+                out.append(f"  {node.name} alone carries at least "
+                           f"{fraction * 100:.0f}% of what you hear.\n", style="grey70")
+        elif len(resolved) == 1:
+            _, fraction, node = resolved[0]
             out.append("! ", style="bold red")
-            out.append(f"2 relays carry {top2 * 100:.1f}% of your inbound traffic.\n",
+            out.append(f"1 relay carries {fraction * 100:.1f}% of your inbound traffic.\n",
                        style="bold red")
-            first, first_share = share[0]
-            name, _ = relay_label(self.state, first.byte)
             out.append("  losing ", style="grey70")
-            out.append(name.plain.split("  ")[0].strip(), style="bold bright_white")
-            out.append(f" alone would cost you about {first_share * 100:.0f}% "
-                       f"of what you hear.\n", style="grey70")
-        elif len(share) >= 3:
-            out.append("+ ", style="bold green")
-            out.append(f"traffic is spread across {len(share)} relays - "
-                       f"no single point of failure.\n", style="green")
-        if any(len(self.state.resolve_relay(r.byte)) > 1 for r, _ in share):
-            out.append("  rows marked ?xN are ambiguous: only the low byte of the "
-                       "relay's node number is sent,\n  so several known nodes match.",
-                       style="grey54")
+            out.append(node.name, style="bold bright_white")
+            out.append(" would remove the only observed relay path.\n", style="grey70")
+        else:
+            top2 = sum(fraction for _, fraction, _ in resolved[:2])
+            if len(resolved) >= 2 and top2 >= 0.8:
+                out.append("! ", style="bold red")
+                out.append(f"2 relays carry {top2 * 100:.1f}% of your inbound traffic.\n",
+                           style="bold red")
+                _, first_share, node = resolved[0]
+                out.append("  losing ", style="grey70")
+                out.append(node.name, style="bold bright_white")
+                out.append(f" alone would cost you about {first_share * 100:.0f}% "
+                           f"of what you hear.\n", style="grey70")
+            elif len(resolved) >= 3:
+                out.append("+ ", style="bold green")
+                out.append(f"traffic is spread across {len(resolved)} relays - "
+                           f"no single point of failure.\n", style="green")
+
+        if unresolved:
+            if self.state.protocol == "meshcore":
+                explanation = ("  unresolved rows retain the on-wire hash: short "
+                               "MeshCore hashes may match several repeaters, while "
+                               "unknown hashes match none yet.")
+            else:
+                explanation = ("  unresolved rows retain the on-wire byte: several "
+                               "Meshtastic nodes may share it, or no known node matches.")
+            out.append(explanation, style="grey54")
         return out
 
     # -------------------------------------------------------------- health
@@ -202,14 +304,23 @@ class RelayView(Static):
         table.add_row(*[Text(h, style="grey42")
                         for h in ("origin", "", "reached you via", "packets")])
 
-        edges = self.state.relay_edges.most_common(12)
+        grouped: Counter[tuple[str, tuple[str, str]]] = Counter()
+        representative: dict[tuple[str, tuple[str, str]], str] = {}
+        for (origin, relay_hash), count in self.state.relay_edges.items():
+            identity = _relay_group(self.state, relay_hash)
+            key = (origin, identity)
+            grouped[key] += count
+            current = representative.get(key, "")
+            if len(relay_hash) > len(current):
+                representative[key] = relay_hash
+        edges = grouped.most_common(12)
         if not edges:
             table.add_row(Text("nothing yet", style="grey42"),
                           *[Text("") for _ in range(3)])
             return table
-        for (origin, byte), count in edges:
+        for (origin, identity), count in edges:
             node = self.state.nodes.get(origin)
-            label, _ = relay_label(self.state, byte)
+            label, _ = relay_label(self.state, representative[(origin, identity)])
             table.add_row(
                 Text((node.name if node else origin)[:26],
                      style="bright_white" if node else "grey42"),

@@ -7,11 +7,32 @@ from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .model import BROADCAST, SPARK_WIDTH, ChatMessage, Node, Packet
+from .model import (BROADCAST, SPARK_WIDTH, ChatMessage, Node, Packet,
+                    normalize_relay_hash)
 
 PACKET_BUFFER = 2000
 CHAT_BUFFER = 1000
 RATE_WINDOW = 300.0  # seconds of history kept for the packets/min figure
+
+
+class RelayMap(dict[str, "RelayStat"]):
+    """String-keyed relay map that still accepts legacy one-byte lookups."""
+
+    @staticmethod
+    def _key(value: Any) -> Any:
+        return normalize_relay_hash(value) or value
+
+    def __getitem__(self, key: Any) -> "RelayStat":
+        return super().__getitem__(self._key(key))
+
+    def __setitem__(self, key: Any, value: "RelayStat") -> None:
+        super().__setitem__(self._key(key), value)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(self._key(key))
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return super().get(self._key(key), default)
 
 
 @dataclass
@@ -58,10 +79,11 @@ class ForeignChannel:
 
 @dataclass
 class RelayStat:
-    """Traffic relayed to us by one node, keyed by the low byte of its number.
+    """Traffic delivered through one on-wire relay token.
 
-    Meshtastic only puts that single byte on the wire, so several nodes can
-    share a key; `candidates` records the ambiguity rather than hiding it.
+    ``byte`` remains the token's first byte for compatibility with Meshtastic
+    and older callers.  ``relay_hash`` preserves MeshCore's complete 1- to
+    4-byte public-key prefix so wider paths never collapse into one bucket.
     """
 
     byte: int
@@ -73,6 +95,19 @@ class RelayStat:
     snr_n: int = 0
     last_snr: float | None = None
     snr_history: deque[float] = field(default_factory=lambda: deque(maxlen=SPARK_WIDTH))
+    relay_hash: str = ""
+
+    def __post_init__(self) -> None:
+        token = normalize_relay_hash(self.relay_hash)
+        self.relay_hash = token or f"{self.byte & 0xFF:02x}"
+
+    @property
+    def key(self) -> str:
+        return self.relay_hash
+
+    @property
+    def hash_size(self) -> int:
+        return len(self.relay_hash) // 2
 
     @property
     def avg_snr(self) -> float | None:
@@ -217,8 +252,8 @@ class MeshState:
         self.unread: Counter = Counter()
         self.local_channels: list[LocalChannel] = []
         self.foreign_channels: dict[int, ForeignChannel] = {}
-        self.relays: dict[int, RelayStat] = {}
-        self.relay_edges: Counter[tuple[str, int]] = Counter()
+        self.relays: RelayMap = RelayMap()
+        self.relay_edges: Counter[tuple[str, str]] = Counter()
         self.neighbor_edges: dict[tuple[str, str], NeighborEdge] = {}
         self.mqtt_packets: int = 0
         # Newest packet timestamp folded into state, so a restart can
@@ -506,13 +541,20 @@ class MeshState:
     def _record_relay(self, packet: Packet) -> None:
         """Every packet names the node that last forwarded it - that is the
         only routing evidence on the wire, and enough to build a real graph."""
-        byte = packet.relay_node
-        if byte is None:
+        if self.protocol == "meshtastic":
+            # Meshtastic's relayNode is always exactly one low byte.  Ignore
+            # any unrelated/widened metadata rather than changing its meaning.
+            relay_hash = normalize_relay_hash(packet.relay_node)
+        else:
+            relay_hash = (normalize_relay_hash(packet.relay_hash)
+                          or normalize_relay_hash(packet.relay_node))
+        if relay_hash is None:
             return
-        relay = self.relays.get(byte)
+        relay = self.relays.get(relay_hash)
         if relay is None:
-            relay = RelayStat(byte=byte, first_seen=packet.ts)
-            self.relays[byte] = relay
+            relay = RelayStat(byte=int(relay_hash[:2], 16), relay_hash=relay_hash,
+                              first_seen=packet.ts)
+            self.relays[relay_hash] = relay
         relay.packets += 1
         relay.last_seen = packet.ts
         relay.origins.add(packet.from_id)
@@ -525,7 +567,7 @@ class MeshState:
         # hop; and an edge from a sender the radio could not identify would
         # link a phantom node into the graph.
         if packet.hops and packet.from_id != "!00000000":
-            self.relay_edges[(packet.from_id, byte)] += 1
+            self.relay_edges[(packet.from_id, relay_hash)] += 1
 
     def _record_telemetry(self, packet: Packet) -> None:
         if packet.portnum != "TELEMETRY_APP":
@@ -606,15 +648,21 @@ class MeshState:
             node.packets = 0
             node.snr_history.clear()
 
-    def resolve_relay(self, byte: int) -> list[Node]:
-        """Nodes matching a relay byte. More than one means ambiguity.
+    def resolve_relay(self, relay_hash: str | int) -> list[Node]:
+        """Nodes matching an on-wire relay token.
 
         Meshtastic puts the LOW byte of the relayer's node number on the wire;
-        a MeshCore path byte is the FIRST byte of the repeater's public key,
-        which is the high byte of the num derived from it.
+        a MeshCore token is the first 1-4 bytes of the repeater's public key.
+        A one-byte token can therefore remain ambiguous, while a wider token
+        is matched exactly at its observed width.
         """
+        token = normalize_relay_hash(relay_hash)
+        if token is None:
+            return []
         if self.protocol == "meshcore":
-            return [n for n in self.nodes.values() if (n.num >> 24) & 0xFF == byte]
+            return [n for n in self.nodes.values()
+                    if n.node_id.removeprefix("!").lower().startswith(token)]
+        byte = int(token, 16) if len(token) == 2 else -1
         return [n for n in self.nodes.values() if (n.num & 0xFF) == byte]
 
     def relay_share(self) -> list[tuple[RelayStat, float]]:

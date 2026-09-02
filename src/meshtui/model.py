@@ -124,6 +124,32 @@ PORT_STYLES: dict[str, tuple[str, str]] = {
 }
 
 
+def normalize_relay_hash(value: Any) -> str | None:
+    """Return a canonical on-wire relay token without losing its width.
+
+    Integers are intentionally accepted only for the legacy one-byte field;
+    wider MeshCore hashes must arrive as hex text or bytes so a leading zero
+    remains distinguishable (``00bc`` is two bytes, not ``bc``).
+    """
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return f"{value:02x}" if 0 <= value <= 0xFF else None
+    if isinstance(value, (bytes, bytearray)):
+        text = bytes(value).hex()
+    else:
+        text = str(value).strip().lower()
+        if text.startswith("0x"):
+            text = text[2:]
+    if len(text) not in (2, 4, 6, 8):
+        return None
+    try:
+        int(text, 16)
+    except ValueError:
+        return None
+    return text
+
+
 def port_label(portnum: str) -> tuple[str, str]:
     if portnum in PORT_STYLES:
         return PORT_STYLES[portnum]
@@ -145,13 +171,17 @@ class Packet:
     hops: int | None = None
     packet_id: int | None = None
     encrypted: bool = False
-    # Low byte of the node number that relayed this packet to us. The only
-    # routing evidence a packet carries, and enough to build a real graph.
+    # Meshtastic puts the low byte of the forwarding node number here.
+    # MeshCore callers retain that first byte for compatibility and also set
+    # relay_hash to the complete 1- to 4-byte path token.
     relay_node: int | None = None
     via_mqtt: bool = False
     # Set when a PUBLISHED key decrypted this packet - never a recovered secret.
     decrypted_with: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # Appended rather than inserted beside relay_node so positional callers of
+    # the older Packet constructor keep their original field bindings.
+    relay_hash: str | None = None
 
     @property
     def is_broadcast(self) -> bool:

@@ -33,8 +33,11 @@ def is_rebroadcaster(node: Any) -> bool:
 
 
 def plausible_relays(candidates: list) -> tuple[list, bool]:
-    """Narrow byte-share candidates to who could have rebroadcast, sorted
-    most-recently-heard first, plus whether the answer is still a guess.
+    """Narrow hash candidates to who could have rebroadcast.
+
+    Explicit non-relay roles drop out when a repeater is known.  A blank role
+    is not proof that a node cannot repeat, so it remains a possible collision
+    rather than making the known repeater look certain.
 
     THE shared ranking for every place a relay byte becomes a name (chat
     repeat badges, the relays view, hop resolution). Three copies of this
@@ -42,8 +45,10 @@ def plausible_relays(candidates: list) -> tuple[list, bool]:
     three states away; there will not be a fourth copy.
     """
     plausible = [n for n in candidates if is_rebroadcaster(n)]
-    ambiguous = len(plausible) > 1 or (not plausible and len(candidates) > 1)
-    pool = sorted(plausible or list(candidates),
+    unknown_role = [n for n in candidates if not (getattr(n, "role", "") or "").strip()]
+    pool = plausible + unknown_role if plausible else list(candidates)
+    ambiguous = len(pool) > 1
+    pool = sorted(pool,
                   key=lambda n: -(getattr(n, "last_heard", None) or 0.0))
     return pool, ambiguous
 
@@ -218,8 +223,12 @@ def analyze(state: Any, obs: PathObservation) -> PathAnalysis:
         # could actually rebroadcast. Prefer positioned among what remains
         # (repeaters advertise locations as a rule).
         pool, ambiguous = plausible_relays(candidates)
-        pick = min(pool, key=lambda n: (not n.has_position,
-                                        -(n.last_heard or 0.0))) if pool else None
+        # Never attach a candidate's name or coordinates to a collided hash.
+        # Recency and position can rank a candidate list for inspection, but
+        # neither makes the short on-wire token identify that node.
+        pick = (min(pool, key=lambda n: (not n.has_position,
+                                         -(n.last_heard or 0.0)))
+                if pool and not ambiguous else None)
         hops.append(Hop(byte=byte, node=pick, ambiguous=ambiguous))
     analysis = PathAnalysis(origin=origin, me=me, hops=hops)
 

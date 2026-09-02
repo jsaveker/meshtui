@@ -41,6 +41,7 @@ from .model import (
     Packet,
     PeerRef,
     SendReceipt,
+    normalize_relay_hash,
     payload_bytes,
 )
 from .radio import Emit, RadioLink
@@ -124,6 +125,53 @@ def _split_path(path: Any, path_len: Any) -> list[str]:
         width = chars // path_len
     hashes = [raw[i:i + width] for i in range(0, chars // width * width, width)]
     return [h for h in hashes if len(h) == width]
+
+
+def last_path_hash(path: Any, path_len: Any, hash_size: Any = None) -> str | None:
+    """Return the final MeshCore path token at its original byte width."""
+    if isinstance(path, (bytes, bytearray)):
+        raw = bytes(path).hex()
+    else:
+        raw = str(path or "").strip().lower()
+        if raw.startswith("0x"):
+            raw = raw[2:]
+    if not raw or len(raw) % 2:
+        return None
+    try:
+        int(raw, 16)
+    except ValueError:
+        return None
+    if isinstance(path_len, int) and path_len <= 0:
+        return None
+    try:
+        width = int(hash_size) * 2
+    except (TypeError, ValueError):
+        width = 0
+    if width not in (2, 4, 6, 8):
+        hashes = _split_path(raw, path_len)
+        # When the width is inferred, require the path to contain exactly the
+        # advertised number of hops.  _split_path deliberately falls back to
+        # one-byte chunks for older callers, but that fallback must not turn a
+        # malformed RX log into a confident relay identity.
+        if isinstance(path_len, int) and len(hashes) != path_len:
+            return None
+        token = hashes[-1] if hashes else None
+        if token is None or normalize_relay_hash(token) is None:
+            return None
+        return token
+    if len(raw) % width:
+        return None
+    if isinstance(path_len, int):
+        if path_len <= 0 or len(raw) != path_len * width:
+            return None
+    if len(raw) < width:
+        return None
+    token = raw[-width:]
+    try:
+        int(token, 16)
+    except ValueError:
+        return None
+    return token
 
 
 def key_to_num(pubkey: Any) -> int:
@@ -509,12 +557,14 @@ class MeshCoreLink(RadioLink):
                 to_id: str = BROADCAST, snr: float | None = None,
                 rssi: int | None = None, hops: int | None = None,
                 channel: int = 0, relay_node: int | None = None,
+                relay_hash: str | None = None,
                 encrypted: bool = False,
                 raw: dict[str, Any] | None = None) -> None:
         self.emit("packet", Packet(
             ts=time.time(), from_id=from_id, to_id=to_id, portnum=portnum,
             summary=summary, channel=channel, snr=snr, rssi=rssi, hops=hops,
             relay_node=relay_node, encrypted=encrypted, raw=raw or {},
+            relay_hash=relay_hash,
         ))
 
     @staticmethod
@@ -677,20 +727,17 @@ class MeshCoreLink(RadioLink):
         summary = f"rf {kind} {data.get('payload_length', '?')}B{route_note}"
         snr = self._signal(data, "snr")
         rssi = self._signal(data, "rssi")
-        # The last byte of the path is the repeater that actually delivered
+        # The last token of the path is the repeater that actually delivered
         # this packet to us, and the frame's SNR/RSSI measure that link - the
         # per-relay signal attribution the relays view is built on.
         relay = None
         path = data.get("path") or ""
-        hash_size = data.get("path_hash_size", 1)
-        if path and hash_size in (1, 2, 3, 4):
-            # The relays view keys by the FIRST byte of the delivering
-            # repeater's hash, which is the first byte of its key whatever
-            # the hash width.
-            try:
-                relay = int(path[-2 * hash_size:][:2], 16)
-            except ValueError:
-                relay = None
+        hash_size = data.get("path_hash_size")
+        relay_hash = last_path_hash(path, data.get("path_len"), hash_size)
+        if relay_hash is not None:
+            # Keep the first-byte field on gateway events so an older client
+            # can still consume a packet emitted by a newer gateway.
+            relay = int(relay_hash[:2], 16)
         hops = None
         if data.get("adv_key"):
             # The RF log decodes a heard advert completely: sender key, name,
@@ -720,7 +767,8 @@ class MeshCoreLink(RadioLink):
         except ValueError:
             foreign, foreign_hash = False, 0
         self._packet(PORT_RXLOG, from_id, summary, snr=snr, rssi=rssi,
-                     hops=hops, relay_node=relay, encrypted=foreign,
+                     hops=hops, relay_node=relay, relay_hash=relay_hash,
+                     encrypted=foreign,
                      channel=foreign_hash, raw=data)
         # A repeated group-text is our (or someone's) channel message being
         # rebroadcast. The path lists the repeaters that carried it and pkt_hash

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from .model import ChatMessage, Node, Packet
+from .model import ChatMessage, Node, Packet, normalize_relay_hash
 from .pathcalc import PathObservation
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS packets (
     hops        INTEGER,
     packet_id   INTEGER,
     summary     TEXT,
-    raw         TEXT
+    raw         TEXT,
+    relay_hash  TEXT
 );
 CREATE INDEX IF NOT EXISTS packets_ts   ON packets(ts);
 CREATE INDEX IF NOT EXISTS packets_from ON packets(from_id);
@@ -114,6 +115,29 @@ CREATE TABLE IF NOT EXISTS relay_edges (
     relay_byte  INTEGER,
     packets     INTEGER DEFAULT 0,
     PRIMARY KEY (origin, relay_byte)
+);
+
+-- Width-preserving relay aggregates.  The byte-only tables above remain as an
+-- untouched migration/audit source; current code reads and writes these v2
+-- tables exclusively, so exact-width observations can never collapse again.
+CREATE TABLE IF NOT EXISTS relay_hashes (
+    local_node  TEXT NOT NULL,
+    relay_hash  TEXT NOT NULL,
+    packets     INTEGER DEFAULT 0,
+    origins     TEXT,
+    first_seen  REAL,
+    last_seen   REAL,
+    snr_sum     REAL DEFAULT 0,
+    snr_n       INTEGER DEFAULT 0,
+    PRIMARY KEY (local_node, relay_hash)
+);
+
+CREATE TABLE IF NOT EXISTS relay_hash_edges (
+    local_node  TEXT NOT NULL,
+    origin      TEXT,
+    relay_hash  TEXT NOT NULL,
+    packets     INTEGER DEFAULT 0,
+    PRIMARY KEY (local_node, origin, relay_hash)
 );
 
 CREATE TABLE IF NOT EXISTS path_obs (
@@ -345,10 +369,15 @@ class Store:
             if name not in outbox_cols:
                 conn.execute(f"ALTER TABLE outbox ADD COLUMN {name} {sqltype}")
 
+        packet_cols = {row[1] for row in conn.execute("PRAGMA table_info(packets)")}
+        if "relay_hash" not in packet_cols:
+            conn.execute("ALTER TABLE packets ADD COLUMN relay_hash TEXT")
+
         relay_cols = {row[1] for row in conn.execute("PRAGMA table_info(relays)")}
         if "local_node" in relay_cols:
+            cls._seed_relay_hash_tables(conn)
             conn.commit()
-            return  # already scoped
+            return  # already scoped; the width migration above is independent
 
         previous = cls._infer_previous_local_node(conn) or "unknown"
         log.info("scoping existing observations to %s", previous)
@@ -391,7 +420,34 @@ class Store:
         # shows the history it just scoped.
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                      (LAST_OBSERVER, json.dumps(previous)))
+        cls._seed_relay_hash_tables(conn)
         conn.commit()
+
+    @staticmethod
+    def _seed_relay_hash_tables(conn: sqlite3.Connection) -> None:
+        """Copy legacy byte aggregates into v2 exactly once.
+
+        A historical byte is evidence for only a two-character token.  It is
+        never expanded to match a newer two- or three-byte observation, and
+        INSERT OR IGNORE makes reopening the database idempotent.
+        """
+        relay_cols = {row[1] for row in conn.execute("PRAGMA table_info(relays)")}
+        edge_cols = {row[1] for row in conn.execute("PRAGMA table_info(relay_edges)")}
+        if {"local_node", "byte"}.issubset(relay_cols):
+            conn.execute(
+                "INSERT OR IGNORE INTO relay_hashes"
+                " (local_node, relay_hash, packets, origins, first_seen, last_seen,"
+                " snr_sum, snr_n)"
+                " SELECT local_node, printf('%02x', byte & 255), packets, origins,"
+                " first_seen, last_seen, snr_sum, snr_n FROM relays"
+            )
+        if {"local_node", "relay_byte"}.issubset(edge_cols):
+            conn.execute(
+                "INSERT OR IGNORE INTO relay_hash_edges"
+                " (local_node, origin, relay_hash, packets)"
+                " SELECT local_node, origin, printf('%02x', relay_byte & 255), packets"
+                " FROM relay_edges"
+            )
 
     def close(self) -> None:
         if not self.enabled:
@@ -460,9 +516,12 @@ class Store:
             raw = "{}"
         self._put(
             "INSERT INTO packets (ts, from_id, to_id, portnum, channel, snr, rssi, hops,"
-            " packet_id, summary, raw, local_node) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " packet_id, summary, raw, local_node, relay_hash)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (p.ts, p.from_id, p.to_id, p.portnum, p.channel, p.snr, p.rssi, p.hops,
-             p.packet_id, p.summary, raw, self.local_node),
+             p.packet_id, p.summary, raw, self.local_node,
+             normalize_relay_hash(p.relay_hash)
+             or normalize_relay_hash(p.relay_node)),
         )
 
     def add_path(self, o: "PathObservation") -> None:
@@ -628,27 +687,34 @@ class Store:
         self._put(f"UPDATE nodes SET {assignments} WHERE node_id=?",
                   (*values.values(), n.node_id))
 
-    def save_relay(self, byte: int, packets: int, origins: Iterable[str],
+    def save_relay(self, relay_hash: str | int, packets: int, origins: Iterable[str],
                    first_seen: float, last_seen: float, snr_sum: float, snr_n: int) -> None:
+        token = normalize_relay_hash(relay_hash)
+        if token is None:
+            raise ValueError(f"invalid relay hash: {relay_hash!r}")
         self._put(
-            "INSERT INTO relays (local_node, byte, packets, origins, first_seen, last_seen,"
+            "INSERT INTO relay_hashes (local_node, relay_hash, packets, origins,"
+            " first_seen, last_seen,"
             " snr_sum, snr_n) VALUES (?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(local_node, byte) DO UPDATE SET packets=excluded.packets,"
+            " ON CONFLICT(local_node, relay_hash) DO UPDATE SET packets=excluded.packets,"
             " origins=excluded.origins,"
-            " first_seen=MIN(relays.first_seen, excluded.first_seen),"
-            " last_seen=MAX(relays.last_seen, excluded.last_seen),"
+            " first_seen=MIN(relay_hashes.first_seen, excluded.first_seen),"
+            " last_seen=MAX(relay_hashes.last_seen, excluded.last_seen),"
             " snr_sum=excluded.snr_sum, snr_n=excluded.snr_n",
-            (self.local_node, byte, packets, json.dumps(sorted(origins)),
+            (self.local_node, token, packets, json.dumps(sorted(origins)),
              first_seen, last_seen, snr_sum, snr_n),
         )
 
-    def save_relay_edge(self, origin: str, byte: int, packets: int) -> None:
+    def save_relay_edge(self, origin: str, relay_hash: str | int, packets: int) -> None:
+        token = normalize_relay_hash(relay_hash)
+        if token is None:
+            raise ValueError(f"invalid relay hash: {relay_hash!r}")
         self._put(
-            "INSERT INTO relay_edges (local_node, origin, relay_byte, packets)"
+            "INSERT INTO relay_hash_edges (local_node, origin, relay_hash, packets)"
             " VALUES (?,?,?,?)"
-            " ON CONFLICT(local_node, origin, relay_byte) DO UPDATE"
+            " ON CONFLICT(local_node, origin, relay_hash) DO UPDATE"
             " SET packets=excluded.packets",
-            (self.local_node, origin, byte, packets),
+            (self.local_node, origin, token, packets),
         )
 
     def save_foreign_channel(self, ch: Any) -> None:
@@ -866,18 +932,23 @@ class Store:
 
     def load_relays(self) -> list[dict[str, Any]]:
         return [
-            {"byte": r["byte"], "packets": r["packets"] or 0,
+            {"relay_hash": r["relay_hash"],
+             # Preserve the old read shape for extensions that still inspect
+             # the first byte while new callers use the width-aware token.
+             "byte": int(r["relay_hash"][:2], 16),
+             "packets": r["packets"] or 0,
              "origins": _json_list(r["origins"]), "first_seen": r["first_seen"] or 0.0,
              "last_seen": r["last_seen"] or 0.0, "snr_sum": r["snr_sum"] or 0.0,
              "snr_n": r["snr_n"] or 0}
-            for r in self._read("SELECT * FROM relays WHERE local_node IS ?",
+            for r in self._read("SELECT * FROM relay_hashes WHERE local_node IS ?",
                                 (self.local_node,))
         ]
 
-    def load_relay_edges(self) -> list[tuple[str, int, int]]:
-        return [(r["origin"], r["relay_byte"], r["packets"] or 0)
-                for r in self._read("SELECT * FROM relay_edges WHERE local_node IS ?",
-                                    (self.local_node,))]
+    def load_relay_edges(self) -> list[tuple[str, str, int]]:
+        return [(r["origin"], r["relay_hash"], r["packets"] or 0)
+                for r in self._read("SELECT * FROM relay_hash_edges WHERE local_node IS ?",
+                                    (self.local_node,))
+                if r["origin"]]
 
     def load_foreign_channels(self) -> list[dict[str, Any]]:
         out = []

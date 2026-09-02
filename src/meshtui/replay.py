@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .gateway import Gateway
-from .meshcore_link import contact_to_node, key_to_id
+from .meshcore_link import contact_to_node, key_to_id, last_path_hash
 from .model import (ChatMessage, DeliveryStatus, DestinationRef, Packet,
                     SendReceipt)
 from .radio import RadioLink
@@ -33,13 +33,18 @@ def packet_from_row(row: dict[str, Any]) -> Packet:
     if not isinstance(raw, dict):
         raw = {}
     portnum = row.get("portnum") or "UNKNOWN"
+    relay_hash = row.get("relay_hash")
+    if not relay_hash and portnum == "RXLOG_APP":
+        relay_hash = last_path_hash(
+            raw.get("path"), raw.get("path_len"), raw.get("path_hash_size"))
     return Packet(
         ts=float(row.get("ts") or 0.0), from_id=row.get("from_id") or "?",
         to_id=row.get("to_id") or "?", portnum=portnum,
         summary=row.get("summary") or "", channel=int(row.get("channel") or 0),
         snr=row.get("snr"), rssi=row.get("rssi"), hops=row.get("hops"),
         packet_id=row.get("packet_id"), encrypted=portnum == "ENCRYPTED",
-        relay_node=raw.get("relayNode"), via_mqtt=bool(raw.get("viaMqtt")), raw=raw)
+        relay_node=raw.get("relayNode"), via_mqtt=bool(raw.get("viaMqtt")), raw=raw,
+        relay_hash=relay_hash)
 
 
 class ReplayLink(RadioLink):

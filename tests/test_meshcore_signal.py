@@ -40,6 +40,7 @@ check("rx-log advert emits one packet and one contact",
 check("packet is attributed to the sender", packets[0].from_id, "!abababab")
 check("flood path_len becomes the hop count", packets[0].hops, 2)
 check("the delivering repeater is the LAST path byte", packets[0].relay_node, 0x4C)
+check("the complete delivering hash survives", packets[0].relay_hash, "4c")
 check("the packet keeps the receive-side SNR", packets[0].snr, -6.5)
 
 # heard direct (path_len 0): the SNR really is the sender's link to us

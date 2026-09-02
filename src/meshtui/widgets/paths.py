@@ -148,8 +148,10 @@ class PathScreen(Screen[None]):
                 [n for n in self.state.nodes.values()
                  if n.node_id[1:1 + len(wanted)].lower() == wanted])
             label = f"0x{byte}"
-            if pool:
-                label = (pool[0].long_name or pool[0].label) + ("?" if ambiguous else "")
+            if pool and not ambiguous:
+                label = pool[0].long_name or pool[0].label
+            elif ambiguous:
+                label += f" ({len(pool)} possible)"
             busiest = f"   busiest hop: {label} ({count} paths)"
         median = f"   median stretch: x{stretches[len(stretches) // 2]:.1f}" if stretches else ""
         self.query_one("#paths-status", Static).update(Text(
@@ -227,8 +229,10 @@ class PathScreen(Screen[None]):
         for index, hop in enumerate(analysis.hops, start=1):
             out.append(f"   {index}. ", style="grey42")
             if hop.node is None:
-                out.append(f"0x{hop.byte}", style="red")
-                out.append("  (unknown repeater)\n", style="grey42")
+                out.append(f"0x{hop.byte}",
+                           style="dark_orange" if hop.ambiguous else "red")
+                detail = "ambiguous repeater hash" if hop.ambiguous else "unknown repeater"
+                out.append(f"  ({detail})\n", style="grey42")
                 continue
             out.append(hop.label, style="yellow")
             if not hop.node.has_position:

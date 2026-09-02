@@ -23,10 +23,11 @@ from .model import (
     DestinationRef,
     PeerRef,
     SendReceipt,
+    normalize_relay_hash,
     payload_bytes,
 )
 from .radio import RadioLink, protocol_payload_limit
-from .state import LocalChannel, MeshState, sane_heard
+from .state import ForeignChannel, LocalChannel, MeshState, RelayStat, sane_heard
 from .store import LAST_OBSERVER, Store, state_ts_key
 
 
@@ -172,6 +173,7 @@ class MeshService:
                 node.first_seen = first_seen
             self._apply_derived(node, derived)
         self._restore_observations()
+        self._restore_aggregates()
         for message in self.store.recent_messages():
             self.state.add_chat(message)
             if message.is_dm:
@@ -235,6 +237,39 @@ class MeshService:
                 except (TypeError, ValueError):
                     pass
 
+    def _restore_aggregates(self) -> None:
+        """Load the currently selected observer's receiver-relative state."""
+        store = self.store
+        if store is None or not store.enabled:
+            return
+        self.state.relays.clear()
+        self.state.relay_edges.clear()
+        self.state.foreign_channels.clear()
+        for row in store.load_relays():
+            relay_hash = row["relay_hash"]
+            self.state.relays[relay_hash] = RelayStat(
+                byte=int(relay_hash[:2], 16), relay_hash=relay_hash,
+                packets=row["packets"], origins=set(row["origins"]),
+                first_seen=row["first_seen"] or time.time(),
+                last_seen=row["last_seen"] or time.time(),
+                snr_sum=row["snr_sum"], snr_n=row["snr_n"],
+            )
+        for origin, relay_hash, count in store.load_relay_edges():
+            self.state.relay_edges[(origin, relay_hash)] = count
+        for row in store.load_foreign_channels():
+            channel = ForeignChannel(
+                hash=row["hash"], packets=row["packets"] or 0,
+                senders=row["senders"], first_seen=row["first_seen"] or time.time(),
+                last_seen=row["last_seen"] or time.time(),
+                snr_min=row["snr_min"], snr_max=row["snr_max"],
+                hops_min=row["hops_min"], hops_max=row["hops_max"],
+                key_label=row["key_label"], sample=row["sample"],
+            )
+            channel.ports.update(row["ports"])
+            self.state.foreign_channels[row["hash"]] = channel
+        self.state.last_packet_ts = float(
+            store.get_meta(state_ts_key(store.local_node), 0.0) or 0.0)
+
     def persist_snapshot(self) -> None:
         """Persist state derived from packets without writing once per packet."""
         store = self.store
@@ -246,11 +281,11 @@ class MeshService:
                 store.save_node_derived(node)
                 store.save_node_observation(node)
             for relay in self.state.relays.values():
-                store.save_relay(relay.byte, relay.packets, relay.origins,
+                store.save_relay(relay.key, relay.packets, relay.origins,
                                  relay.first_seen, relay.last_seen,
                                  relay.snr_sum, relay.snr_n)
-            for (origin, byte), count in self.state.relay_edges.items():
-                store.save_relay_edge(origin, byte, count)
+            for (origin, relay_hash), count in self.state.relay_edges.items():
+                store.save_relay_edge(origin, relay_hash, count)
             for channel in self.state.foreign_channels.values():
                 store.save_foreign_channel(channel)
             store.set_meta(state_ts_key(store.local_node), self.state.last_packet_ts)
@@ -388,21 +423,25 @@ class MeshService:
             return m
         return None
 
-    def _repeater_label(self, byte: str) -> str:
+    def _repeater_label(self, byte: str | int) -> str:
         """A path hash is the leading byte(s) of a repeater's public key, and
         a node id is '!' + the key's first four bytes - so match the prefix
         (2 hex chars on 1-byte-hash meshes, 4 on 2-byte ones).
 
-        Many nodes can share a short hash; plausible_relays ranks them by
-        what physics allows, and when the answer is still a guess say so
-        with a '?' rather than pretending certainty."""
-        wanted = byte.lower()
+        A collided short hash remains a neutral hash label. Recency can order
+        candidates for inspection, but it cannot turn lossy evidence into an
+        identity."""
+        wanted = normalize_relay_hash(byte)
+        if wanted is None:
+            return f"0x{byte}"
         candidates = [n for n in self.state.nodes.values()
                       if n.node_id[1:1 + len(wanted)].lower() == wanted]
         pool, ambiguous = plausible_relays(candidates)
         if not pool:
-            return f"0x{byte}"
-        return pool[0].name if not ambiguous else f"{pool[0].name}?"
+            return f"0x{wanted}"
+        if ambiguous:
+            return f"0x{wanted} ({len(pool)} possible repeaters)"
+        return pool[0].name
 
     def receive_node(self, raw: dict[str, Any]):
         try:
@@ -493,6 +532,7 @@ class MeshService:
             self.store.local_node = state.my_node_id
             if previous != state.my_node_id:
                 self._restore_observations()
+                self._restore_aggregates()
             # So the next restart's restore can adopt the right scope before
             # the radio has identified itself.
             self.store.set_meta(LAST_OBSERVER, state.my_node_id)

@@ -31,7 +31,17 @@ def packet_to_dict(packet: Packet) -> dict[str, Any]:
 
 def packet_from_dict(data: dict[str, Any]) -> Packet:
     fields = {f.name for f in dataclasses.fields(Packet)}
-    return Packet(**{k: v for k, v in data.items() if k in fields})
+    packet = Packet(**{k: v for k, v in data.items() if k in fields})
+    # During a rolling gateway upgrade, an older server does not emit the new
+    # relay_hash field.  Its RXLOG payload still contains the complete path, so
+    # recover the token instead of silently collapsing it back to relay_node.
+    if packet.relay_hash is None and packet.portnum == "RXLOG_APP" \
+            and isinstance(packet.raw, dict):
+        from .meshcore_link import last_path_hash
+        packet.relay_hash = last_path_hash(
+            packet.raw.get("path"), packet.raw.get("path_len"),
+            packet.raw.get("path_hash_size"))
+    return packet
 
 
 def chat_to_dict(message: ChatMessage) -> dict[str, Any]:

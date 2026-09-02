@@ -89,8 +89,8 @@ check("the repeater outranks a chat node sharing the byte",
       svc2._repeater_label("4c"), "Local Repeater")
 svc2.state.upsert_node({"user": {"id": "!4c000003", "longName": "Other Repeater",
                                  "role": "REPEATER"}, "lastHeard": time.time() - 30})
-check("two repeaters on one byte stays honestly ambiguous",
-      svc2._repeater_label("4c").endswith("?"), True)
+check("two repeaters on one byte stays neutral",
+      svc2._repeater_label("4c"), "0x4c (2 possible repeaters)")
 check("an unknown byte stays a hex label", svc2._repeater_label("ff"), "0xff")
 
 # --- every byte->name path shares ONE ranking (regression: the relays view
@@ -102,7 +102,8 @@ svc2.state.protocol = "meshcore"
 label, ambiguous = relay_label(svc2.state, 0x4c)
 check("relays view never names the implausible chat node",
       "Distant Chat Node" in str(label), False)
-check("relays view picks the freshest repeater", "Other Repeater" in str(label), True)
+check("relays view does not pick the freshest repeater",
+      "Other Repeater" not in str(label) and "Local Repeater" not in str(label), True)
 check("relays view still flags two repeaters as ambiguous", ambiguous, True)
 pool, amb = plausible_relays(list(svc2.state.nodes.values()))
 check("chat nodes drop out when any repeater matches",

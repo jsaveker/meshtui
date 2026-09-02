@@ -19,7 +19,7 @@ from textual.widgets import DataTable, Footer, Input, Static
 from .model import (BROADCAST, ChannelRef, ChatMessage, DeliveryStatus, Packet,
                     PeerRef, outgoing_payload, payload_bytes)
 from .gateway import GatewayLink
-from .meshcore_link import MeshCoreLink, probe_meshcore
+from .meshcore_link import MeshCoreLink, last_path_hash, probe_meshcore
 from .radio import (DemoLink, RadioLink, SerialLink, TCPLink,
                     find_serial_ports, protocol_payload_limit,
                     traceroute_hops)
@@ -308,6 +308,10 @@ class MeshTUI(App[None]):
         if not isinstance(raw, dict):
             raw = {}
         portnum = row.get("portnum") or "UNKNOWN"
+        relay_hash = row.get("relay_hash")
+        if not relay_hash and portnum == "RXLOG_APP":
+            relay_hash = last_path_hash(
+                raw.get("path"), raw.get("path_len"), raw.get("path_hash_size"))
         return Packet(
             ts=float(row.get("ts") or 0.0),
             from_id=row.get("from_id") or "?",
@@ -323,6 +327,7 @@ class MeshTUI(App[None]):
             relay_node=raw.get("relayNode"),
             via_mqtt=bool(raw.get("viaMqtt")),
             raw=raw,
+            relay_hash=relay_hash,
         )
 
     def _replay_worker(self) -> None:
@@ -463,14 +468,16 @@ class MeshTUI(App[None]):
         if store is None:
             return
         for row in store.load_relays():
-            self.state.relays[row["byte"]] = RelayStat(
-                byte=row["byte"], packets=row["packets"], origins=set(row["origins"]),
+            relay_hash = row["relay_hash"]
+            self.state.relays[relay_hash] = RelayStat(
+                byte=int(relay_hash[:2], 16), relay_hash=relay_hash,
+                packets=row["packets"], origins=set(row["origins"]),
                 first_seen=row["first_seen"] or time.time(),
                 last_seen=row["last_seen"] or time.time(),
                 snr_sum=row["snr_sum"], snr_n=row["snr_n"],
             )
-        for origin, byte, count in store.load_relay_edges():
-            self.state.relay_edges[(origin, byte)] = count
+        for origin, relay_hash, count in store.load_relay_edges():
+            self.state.relay_edges[(origin, relay_hash)] = count
         for row in store.load_foreign_channels():
             channel = ForeignChannel(
                 hash=row["hash"], packets=row["packets"] or 0,
@@ -501,11 +508,11 @@ class MeshTUI(App[None]):
             store.save_node_derived(node)
             store.save_node_observation(node)
         for relay in self.state.relays.values():
-            store.save_relay(relay.byte, relay.packets, relay.origins,
+            store.save_relay(relay.key, relay.packets, relay.origins,
                              relay.first_seen, relay.last_seen,
                              relay.snr_sum, relay.snr_n)
-        for (origin, byte), count in self.state.relay_edges.items():
-            store.save_relay_edge(origin, byte, count)
+        for (origin, relay_hash), count in self.state.relay_edges.items():
+            store.save_relay_edge(origin, relay_hash, count)
         for channel in self.state.foreign_channels.values():
             store.save_foreign_channel(channel)
         store.set_meta(state_ts_key(store.local_node), self.state.last_packet_ts)
