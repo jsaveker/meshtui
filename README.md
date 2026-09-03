@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="docs/assets/meshtui-mark.svg" width="88" height="88" alt="MeshTUI logo">
-</p>
-
-<h1 align="center">MeshTUI</h1>
+<h1 align="center">
+  <img src="docs/assets/meshtui-logo.svg" width="420" alt="MeshTUI">
+</h1>
 
 <p align="center">
   <strong>A terminal control surface for <a href="https://github.com/meshcore-dev/MeshCore">MeshCore™</a> and <a href="https://meshtastic.org/">Meshtastic®</a>.</strong><br>
@@ -20,9 +18,9 @@
 </p>
 
 <p align="center">
-  <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-c8ff4d?style=flat-square&labelColor=111411">
-  <img alt="MeshCore and Meshtastic" src="https://img.shields.io/badge/protocols-MeshCore%20%7C%20Meshtastic-ffb454?style=flat-square&labelColor=111411">
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-78dce8?style=flat-square&labelColor=111411"></a>
+  <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-70a7ff?style=flat-square&labelColor=050814">
+  <img alt="MeshCore and Meshtastic" src="https://img.shields.io/badge/protocols-MeshCore%20%7C%20Meshtastic-ad82ff?style=flat-square&labelColor=050814">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-53d6f4?style=flat-square&labelColor=050814"></a>
 </p>
 
 [![MeshTUI route-focused four-pane operator cockpit with nodes, chat, packet hex, and a selected synthetic MeshCore route](docs/assets/meshtui-dashboard.png)](docs/assets/meshtui-dashboard.png)

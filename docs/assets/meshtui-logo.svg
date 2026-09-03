@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 112" role="img" aria-labelledby="title desc">
+  <title id="title">MeshTUI</title>
+  <desc id="desc">A terminal window containing an M-shaped mesh beside the MeshTUI wordmark.</desc>
+  <defs>
+    <linearGradient id="mesh-gradient" x1="38" y1="46" x2="74" y2="74" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#53D6F4"/>
+      <stop offset="0.54" stop-color="#70A7FF"/>
+      <stop offset="1" stop-color="#AD82FF"/>
+    </linearGradient>
+    <linearGradient id="word-gradient" x1="286" y1="36" x2="404" y2="76" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#53D6F4"/>
+      <stop offset="0.58" stop-color="#70A7FF"/>
+      <stop offset="1" stop-color="#AD82FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="418" height="110" rx="18" fill="#050814" stroke="#1B2A42" stroke-width="2"/>
+  <g transform="translate(16 16)">
+    <rect x="1" y="1" width="78" height="78" rx="15" fill="#050814" stroke="#1B2A42" stroke-width="2"/>
+    <path d="M18 10h26l6 6h14l6 6v38l-9 10M19 70l-9-9V18l8-8" fill="none" stroke="#71839E" stroke-width="3" stroke-linecap="square" stroke-linejoin="round"/>
+    <path d="M18 17l4 3-4 3m8 0h6" fill="none" stroke="#53D6F4" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"/>
+    <circle cx="57" cy="21" r="1.5" fill="#71839E"/>
+    <circle cx="63" cy="21" r="1.5" fill="#71839E"/>
+    <circle cx="68" cy="21" r="1.5" fill="#53D6F4"/>
+    <g fill="none" stroke="url(#mesh-gradient)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 29v30M58 29v30M22 59l18-12 18 12"/>
+    </g>
+    <path d="M22 29l18 18 18-18" fill="none" stroke="url(#mesh-gradient)" stroke-width="8" stroke-linecap="square" stroke-linejoin="miter"/>
+    <circle cx="22" cy="29" r="3.5" fill="#53D6F4"/>
+    <circle cx="22" cy="59" r="3.5" fill="#53D6F4"/>
+    <circle cx="40" cy="47" r="3.8" fill="#70A7FF"/>
+    <circle cx="58" cy="29" r="3.5" fill="#AD82FF"/>
+    <circle cx="58" cy="59" r="3.5" fill="#AD82FF"/>
+  </g>
+  <g fill="none" stroke="#EDF4FF" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M122 76V36l14 18 14-18v40"/>
+    <path d="M190 48h-24v28h24M166 62h24"/>
+    <path d="M230 48h-24v14h24v14h-24"/>
+    <path d="M246 36v40M246 58h24v18"/>
+  </g>
+  <g fill="none" stroke="url(#word-gradient)" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M286 36h32M302 36v40"/>
+    <path d="M334 36v36l4 4h20l4-4V36"/>
+    <path d="M380 36h24M392 36v40M380 76h24"/>
+  </g>
+</svg>

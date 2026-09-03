@@ -1,5 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="8" fill="#090b0a"/>
-  <path d="M10 44V20h8l14 14 14-14h8v24h-8V30L32 44 18 30v14z" fill="#c8ff4d"/>
-  <circle cx="32" cy="12" r="3" fill="#ffb454"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" role="img" aria-labelledby="title">
+  <title id="title">MeshTUI mark</title>
+  <defs>
+    <linearGradient id="mesh-gradient" x1="22" y1="30" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#53D6F4"/>
+      <stop offset="0.54" stop-color="#70A7FF"/>
+      <stop offset="1" stop-color="#AD82FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="78" height="78" rx="15" fill="#050814" stroke="#1B2A42" stroke-width="2"/>
+  <path d="M18 10h26l6 6h14l6 6v38l-9 10M19 70l-9-9V18l8-8" fill="none" stroke="#71839E" stroke-width="3" stroke-linecap="square" stroke-linejoin="round"/>
+  <path d="M18 17l4 3-4 3m8 0h6" fill="none" stroke="#53D6F4" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"/>
+  <circle cx="57" cy="21" r="1.5" fill="#71839E"/>
+  <circle cx="63" cy="21" r="1.5" fill="#71839E"/>
+  <circle cx="68" cy="21" r="1.5" fill="#53D6F4"/>
+  <g fill="none" stroke="url(#mesh-gradient)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 29v30M58 29v30M22 59l18-12 18 12"/>
+  </g>
+  <path d="M22 29l18 18 18-18" fill="none" stroke="url(#mesh-gradient)" stroke-width="8" stroke-linecap="square" stroke-linejoin="miter"/>
+  <circle cx="22" cy="29" r="3.5" fill="#53D6F4"/>
+  <circle cx="22" cy="59" r="3.5" fill="#53D6F4"/>
+  <circle cx="40" cy="47" r="3.8" fill="#70A7FF"/>
+  <circle cx="58" cy="29" r="3.5" fill="#AD82FF"/>
+  <circle cx="58" cy="59" r="3.5" fill="#AD82FF"/>
 </svg>
