@@ -11,7 +11,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid
+from textual.containers import Grid, Horizontal
 from textual.css.query import NoMatches
 from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Input, Static
@@ -28,6 +28,7 @@ from .state import ForeignChannel, RelayStat, sane_heard
 from .service import MeshService
 from .store import LAST_OBSERVER, Store, state_ts_key
 from .widgets.admin import AdminScreen
+from .widgets.about import AboutScreen
 from .widgets.audit import AuditScreen
 from .widgets.channels import ChannelScreen
 from .widgets.chat import ChatPane, LeaveChat, OpenChatOverlay
@@ -107,11 +108,12 @@ HELP = """
 
 class MeshTUI(App[None]):
     CSS_PATH = "app.tcss"
-    TITLE = "meshtui"
+    TITLE = "MeshTUI"
 
     BINDINGS = [
         Binding("q", "quit", "quit"),
         Binding("question_mark,f1", "help", "help", key_display="?"),
+        Binding("b", "about", "about", show=False),
         Binding("slash", "command_palette", "command", key_display="/"),
         Binding("z", "expand_chat", "expand chat"),
         Binding("p", "toggle_pause", "pause feed"),
@@ -173,7 +175,13 @@ class MeshTUI(App[None]):
     # ------------------------------------------------------------- layout
 
     def compose(self) -> ComposeResult:
-        yield Static(id="status")
+        brand = Text()
+        brand.append("Mesh", style="bold bright_cyan")
+        brand.append("TUI", style="bold bright_blue")
+        brand.append(" [b]", style="grey54")
+        with Horizontal(id="status-bar"):
+            yield Static(id="status")
+            yield Static(brand, id="status-brand")
         with Grid(id="workspace"):
             yield NodeTable(id="nodes")
             yield ChatPane(id="chat")
@@ -772,7 +780,7 @@ class MeshTUI(App[None]):
             where = state.device_path or (self.port or "searching...")
             who = "not connected"
 
-        left = Text()
+        left = Text(no_wrap=True, overflow="ellipsis")
         left.append(f" {dot} ", style=f"bold {colour}")
         left.append(who, style="bold bright_white")
         left.append("  ")
@@ -992,6 +1000,13 @@ class MeshTUI(App[None]):
             self.push_screen(RoomScreen(self.state, self.link, self))
             return True
 
+        if command == "about":
+            # The palette dismisses itself after a successful command. Queue
+            # About for the following refresh so it becomes the new topmost
+            # screen rather than being pushed underneath the closing palette.
+            self.call_after_refresh(self.action_about)
+            return True
+
         if command == "layout":
             if len(parts) >= 2 and self._set_layout(parts[1].casefold()):
                 return True
@@ -1057,6 +1072,9 @@ class MeshTUI(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_about(self) -> None:
+        self.push_screen(AboutScreen())
 
     def on_leave_chat(self, event: LeaveChat) -> None:
         """Escape from the message box hands focus back to the packet feed."""

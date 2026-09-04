@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
+import unicodedata
 
+from rich.cells import set_cell_size
 from rich.text import Text
 from textual.widgets import DataTable
 
@@ -14,6 +16,47 @@ SPARK_CHARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 SNR_FLOOR, SNR_CEIL = -20.0, 10.0
 
 SORTS = ["heard", "name", "snr", "hops", "packets"]
+
+
+def stable_table_text(value: str) -> str:
+    """Remove glyphs whose terminal width is not portable in fixed rows.
+
+    Radio names are arbitrary Unicode. Terminal emulators do not agree on the
+    display width of emoji and variation sequences, so one such glyph can move
+    every later column. Letters, numbers, and punctuation remain intact; symbol
+    sequences get a single-cell fallback. The full name remains untouched in
+    detail, chat, map, and search views.
+    """
+    out: list[str] = []
+    for char in unicodedata.normalize("NFC", value):
+        category = unicodedata.category(char)
+        codepoint = ord(char)
+        variation_selector = (
+            0xFE00 <= codepoint <= 0xFE0F
+            or 0xE0100 <= codepoint <= 0xE01EF
+        )
+        emoji_modifier = 0x1F3FB <= codepoint <= 0x1F3FF
+        if variation_selector or emoji_modifier or codepoint == 0x20E3:
+            continue
+        if category == "Cf":
+            continue
+        if char.isspace():
+            out.append(" ")
+        elif " " <= char <= "~" or category[0] in {"L", "M", "N", "P"}:
+            out.append(char)
+        else:
+            out.append("*")
+    return "".join(out)
+
+
+def compact_node_name(node: Node) -> Text:
+    """Build the fixed 5 + 1 + 10-cell name column."""
+    short = set_cell_size(stable_table_text(node.label), 5)
+    long = set_cell_size(stable_table_text(node.long_name or node.node_id), 10)
+    name = Text(short, style="bold")
+    name.append(" ")
+    name.append(long, style="grey70")
+    return name
 
 
 def fmt_age(seconds: float | None) -> Text:
@@ -173,9 +216,7 @@ class NodeTable(DataTable):
         else:
             dot = Text("·", style="grey35")
 
-        name = Text(node.label.ljust(5)[:5], style="bold")
-        name.append(" ")
-        name.append(node.long_name[:10] or node.node_id, style="grey70")
+        name = compact_node_name(node)
 
         return (
             dot,

@@ -3,11 +3,23 @@ Screen {
     background: $surface;
 }
 
-#status {
+#status-bar {
     height: 1;
     padding: 0 1;
     background: $panel;
     color: $text;
+}
+
+#status {
+    width: 1fr;
+    height: 1;
+    overflow: hidden;
+}
+
+#status-brand {
+    width: 13;
+    height: 1;
+    text-align: right;
 }
 
 #workspace {
@@ -295,6 +307,37 @@ PacketInspector {
 HelpScreen {
     align: center middle;
     background: $surface 60%;
+}
+
+AboutScreen {
+    align: center middle;
+    background: $surface 65%;
+}
+
+#about-box {
+    width: 82;
+    max-width: 96%;
+    height: 26;
+    max-height: 90%;
+    background: $panel;
+    border: round $accent;
+}
+
+#about-scroll {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-size-vertical: 1;
+}
+
+#about-body {
+    width: 1fr;
+    height: auto;
+}
+
+#about-foot {
+    height: 1;
+    background: $boost;
+    color: $text-muted;
 }
 
 #help-box {

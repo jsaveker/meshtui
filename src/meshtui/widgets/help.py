@@ -18,6 +18,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         ("l", "cycle the protocol-specific four-pane layout"),
         ("T", "cycle phosphor / night-vision / blue-noir / high-contrast"),
         ("escape", "leave the message box / close an overlay"),
+        ("b", "about MeshTUI, project links, and website QR"),
         ("?", "this help"),
         ("q", "quit"),
     ]),

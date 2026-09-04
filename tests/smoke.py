@@ -2,6 +2,8 @@
 
 import asyncio, os, sys, tempfile
 
+from rich.console import Console
+
 from meshtui.app import MeshTUI
 from meshtui.store import Store
 from meshtui.widgets.chat import ChatPane
@@ -117,6 +119,21 @@ async def main() -> int:
         await pilot.press("escape"); await pilot.pause(0.3)
         if type(app.screen).__name__ == "HelpScreen":
             problems.append("escape did not close help")
+
+        # --- project identity / about overlay ---
+        await pilot.press("b"); await pilot.pause(0.3)
+        if type(app.screen).__name__ != "AboutScreen":
+            problems.append("'b' did not open About")
+        else:
+            console = Console(width=100, color_system=None, force_terminal=False)
+            with console.capture() as capture:
+                console.print(app.screen._body(app.screen.size.width))
+            about_text = capture.get()
+            if "MeshTUI" not in about_text or "https://meshtui.com" not in about_text:
+                problems.append("About content did not render")
+        await pilot.press("escape"); await pilot.pause(0.3)
+        if type(app.screen).__name__ == "AboutScreen":
+            problems.append("escape did not close About")
 
         # --- packet inspector ---
         feed = app.query_one("#packets")

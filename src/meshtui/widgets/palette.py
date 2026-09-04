@@ -24,6 +24,7 @@ COMMANDS = [
     ("login <node>", "open remote admin at a node"),
     ("scope", "edit MeshCore flood scope"),
     ("rooms", "browse MeshCore room-server posts"),
+    ("about", "open MeshTUI project info and website QR"),
     # Concrete rows, not fill-in templates: enter (or a click) runs them.
     ("layout balanced", "even four-pane split"),
     ("layout radio", "radio-focused split"),

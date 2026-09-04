@@ -23,6 +23,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Input, RichLog, Static
 
 from ..state import MeshState
+from .qr import qr_text
 
 HELP = [
     ("add <idx> <name>", "create a channel; #name derives its key from the name"),
@@ -41,28 +42,6 @@ def share_url(name: str, hexkey: str) -> str:
     scanning it as a QR joins the channel - no typing on the phone."""
     from urllib.parse import quote
     return f"meshcore://channel/add?name={quote(name)}&secret={hexkey}"
-
-
-def qr_text(payload: str) -> Text | None:
-    """A scannable QR as half-block characters, white-on-black like qrencode's
-    ANSIUTF8 mode. None when the qrcode package is unavailable."""
-    try:
-        import qrcode
-    except ImportError:
-        return None
-    qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
-    qr.add_data(payload)
-    qr.make(fit=True)
-    matrix = qr.get_matrix()  # True = dark module; border rows included
-    blocks = {(True, True): " ", (True, False): "▄",
-              (False, True): "▀", (False, False): "█"}
-    out = Text()
-    for row in range(0, len(matrix), 2):
-        top = matrix[row]
-        bottom = matrix[row + 1] if row + 1 < len(matrix) else [False] * len(top)
-        line = "".join(blocks[(t, b)] for t, b in zip(top, bottom))
-        out.append(line + "\n", style="white on black")
-    return out
 
 
 def parse_secret(text: str) -> bytes | None:
