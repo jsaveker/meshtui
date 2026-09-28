@@ -157,6 +157,25 @@ async def main() -> int:
         check("palette closes after running the hit",
               isinstance(app.screen, CommandPalette), False)
 
+        # A concrete result remains bound to its node ID even when a newer
+        # contact advertises the same untrusted display name.
+        victim = st.upsert_node({"user": {"id": "!11111111", "longName": "Field Base"}})
+        attacker = st.upsert_node({"user": {"id": "!22222222", "longName": "Field Base"}})
+        victim.last_heard = time.time() - 60
+        attacker.last_heard = time.time()
+        await pilot.press("slash")
+        await pilot.pause(0.2)
+        field = app.screen.query_one("#palette-input")
+        field.value = "!11111111"
+        await pilot.pause(0.2)
+        rows = app.screen._matches(field.value)
+        check("node result preserves the matched identity", rows[0].node_id, "!11111111")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        check("duplicate node names cannot redirect palette selection",
+              app.query_one("#nodes").selected_node_id(), "!11111111")
+        app.select_palette_node("!aa000001")
+
         # The refresh tick must not steal the selection: the cursor follows
         # the NODE, not the row index, when the recency sort reorders rows.
         nodes_table = app.query_one("#nodes")

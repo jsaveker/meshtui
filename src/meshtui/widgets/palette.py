@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -41,6 +42,13 @@ COMMAND_WORDS = {c.split()[0] for c, _ in COMMANDS} | {"jump"}
 NODE_ROWS = 8
 
 
+@dataclass(frozen=True)
+class PaletteRow:
+    command: str
+    description: str
+    node_id: str | None = None
+
+
 class CommandPalette(ModalScreen[None]):
     BINDINGS = [
         ("escape", "dismiss", "close"),
@@ -62,14 +70,14 @@ class CommandPalette(ModalScreen[None]):
         self._refresh_results("")
         self.query_one("#palette-input", Input).focus()
 
-    def _matches(self, value: str) -> list[tuple[str, str]]:
+    def _matches(self, value: str) -> list[PaletteRow]:
         terms = value.casefold().split()
-        rows = [row for row in COMMANDS
+        rows = [PaletteRow(*row) for row in COMMANDS
                 if all(term in f"{row[0]} {row[1]}".casefold() for term in terms)]
         rows.extend(self._node_rows(terms))
         return rows
 
-    def _node_rows(self, terms: list[str]) -> list[tuple[str, str]]:
+    def _node_rows(self, terms: list[str]) -> list[PaletteRow]:
         """Live nodes matching the query, so 'ridge' is a runnable hit.
 
         A palette that only searches its own command templates makes the
@@ -89,16 +97,19 @@ class CommandPalette(ModalScreen[None]):
         for n in found[:NODE_ROWS]:
             age = fmt_age(now - n.last_heard if n.last_heard else None).plain
             what = (n.role or "node").lower()
-            rows.append((f"node {n.long_name or n.node_id}",
-                         f"jump to {what} {n.node_id} · heard {age}"))
+            rows.append(PaletteRow(
+                f"node {n.long_name or n.node_id}",
+                f"jump to {what} {n.node_id} · heard {age}",
+                node_id=n.node_id,
+            ))
         return rows
 
     def _refresh_results(self, value: str) -> None:
         table = self.query_one("#palette-results", DataTable)
         table.clear()
-        for command, description in self._matches(value):
-            table.add_row(Text(command, style="bright_white"),
-                          Text(description, style="grey62"))
+        for row in self._matches(value):
+            table.add_row(Text(row.command, style="bright_white"),
+                          Text(row.description, style="grey62"))
         if table.row_count:
             table.move_cursor(row=0)
 
@@ -118,12 +129,16 @@ class CommandPalette(ModalScreen[None]):
         table = self.query_one("#palette-results", DataTable)
         row = rows[table.cursor_row] if 0 <= table.cursor_row < len(rows) else None
         first = value.split()[0].casefold() if value else ""
-        if row and "<" not in row[0] and first not in COMMAND_WORDS:
+        if row and "<" not in row.command and first not in COMMAND_WORDS:
             # The typed text is a search, not a command - run the
             # highlighted hit ('ridge' + enter jumps to the node).
-            value = row[0]
+            if row.node_id is not None:
+                if self.app.select_palette_node(row.node_id):  # type: ignore[attr-defined]
+                    self.dismiss(None)
+                return
+            value = row.command
         elif not value and row:
-            value = row[0].split()[0] if "<" in row[0] else row[0]
+            value = row.command.split()[0] if "<" in row.command else row.command
         if value and self.app.execute_palette(value):  # type: ignore[attr-defined]
             self.dismiss(None)
 
@@ -132,10 +147,15 @@ class CommandPalette(ModalScreen[None]):
         rows = self._matches(self.query_one("#palette-input", Input).value)
         if not (0 <= event.cursor_row < len(rows)):
             return
-        command = rows[event.cursor_row][0]
+        row = rows[event.cursor_row]
+        command = row.command
         if "<" not in command:
             # Concrete entries (a live node) run outright.
-            if self.app.execute_palette(command):  # type: ignore[attr-defined]
+            if row.node_id is not None:
+                executed = self.app.select_palette_node(row.node_id)  # type: ignore[attr-defined]
+            else:
+                executed = self.app.execute_palette(command)  # type: ignore[attr-defined]
+            if executed:
                 self.dismiss(None)
             return
         stub = command.split()[0] + " "
