@@ -1,6 +1,7 @@
 """Gateway event streaming and the attached-TUI GatewayLink."""
 
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -275,6 +276,13 @@ with mock.patch.object(gateway_mod, "default_socket_path", lambda: probe_path):
     server.listen(1)
     check("a live gateway socket -> attach to it",
           cli_mod.should_auto_attach(_args()), True)
+    os.chmod(probe_path.parent, 0o755)
+    check("a socket in a shared directory is not trusted",
+          cli_mod.should_auto_attach(_args()), False)
+    os.chmod(probe_path.parent, 0o700)
+    with mock.patch.object(cli_mod.os, "getuid", return_value=os.getuid() + 1):
+        check("a socket owned by another user is not trusted",
+              cli_mod.should_auto_attach(_args()), False)
     check("an explicit --port still wins",
           cli_mod.should_auto_attach(_args(port="/dev/ttyACM0")), False)
     check("an explicit --gateway is left alone",

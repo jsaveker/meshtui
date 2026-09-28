@@ -29,8 +29,23 @@ log = logging.getLogger(__name__)
 
 
 def default_socket_path() -> Path:
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    return Path(runtime) / f"meshtui-{os.getuid()}.sock"
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / f"meshtui-{os.getuid()}.sock"
+    # Do not put the socket itself at a predictable name in shared /tmp: a
+    # different local user could bind it first and impersonate the gateway.
+    return Path("/tmp") / f"meshtui-{os.getuid()}" / "gateway.sock"
+
+
+def socket_directory_is_private(path: Path) -> bool:
+    """Whether *path*'s parent is an owner-only directory for this user."""
+    try:
+        metadata = path.parent.stat()
+    except OSError:
+        return False
+    return (stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_uid == os.getuid()
+            and stat.S_IMODE(metadata.st_mode) & 0o077 == 0)
 
 
 def receipt_dict(receipt: SendReceipt) -> dict[str, Any]:
@@ -142,6 +157,7 @@ class Gateway:
                  reconnect_seconds: float = 5.0) -> None:
         self.service = service
         self.link = link
+        self._uses_default_socket = socket_path is None
         self.socket_path = Path(socket_path or default_socket_path())
         self.bot_router = bot_router
         self.reconnect_seconds = max(0.1, reconnect_seconds)
@@ -263,7 +279,11 @@ class Gateway:
             pass
 
     def _prepare_socket(self) -> None:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self.socket_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if self._uses_default_socket and not socket_directory_is_private(self.socket_path):
+            raise RuntimeError(
+                f"gateway socket directory must be owned by the current user "
+                f"and mode 0700: {self.socket_path.parent}")
         if not self.socket_path.exists():
             return
         metadata = self.socket_path.lstat()
