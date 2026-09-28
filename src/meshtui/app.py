@@ -1021,6 +1021,20 @@ class MeshTUI(App[None]):
         self.note(f"unknown palette command: {command}", "yellow")
         return False
 
+    def select_palette_node(self, node_id: str) -> bool:
+        """Select the exact node represented by a concrete palette result."""
+        table = self.query_one(NodeTable)
+        table.render_state(self.state)
+        try:
+            row = table._row_ids.index(node_id)
+        except ValueError:
+            self.note(f"unknown node: {node_id}", "yellow")
+            return False
+        table.move_cursor(row=row)
+        table.focus()
+        self.note(f"selected {self.state.node_name(node_id)}", "green")
+        return True
+
     def _open_overlay(self, focus_input: bool = False) -> None:
         if isinstance(self.screen, ChatScreen):
             if focus_input:
