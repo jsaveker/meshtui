@@ -472,7 +472,7 @@ recent chat, health, and route polylines without opening the radio or database:
 
 ```sh
 # Safe local default.
-meshtui serve --gateway /tmp/meshtui-$(id -u).sock
+meshtui serve --gateway /tmp/meshtui-$(id -u)/gateway.sock
 
 # Deliberately expose it to the local network.
 meshtui serve --listen 0.0.0.0 --port 8765

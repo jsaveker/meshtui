@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -528,9 +529,15 @@ def should_auto_attach(args) -> bool:
     """
     if args.gateway is not None or args.port or args.host or args.demo:
         return False
-    from .gateway import default_socket_path
+    from .gateway import default_socket_path, socket_directory_is_private
     path = default_socket_path()
-    if not path.exists():
+    if not socket_directory_is_private(path):
+        return False
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.getuid():
         return False
     # A SIGKILLed gateway leaves its socket file behind; attach only to a
     # gateway that actually answers, else fall through to a direct radio.
